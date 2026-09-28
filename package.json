@@ -1,0 +1,36 @@
+{
+  "name": "payment-reminder-whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bulk Excel upload → WhatsApp payment reminders with per-recipient job isolation, retries, webhooks and audit trail.",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/worker.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "user:create": "node scripts/create-user.js",
+    "template:generate": "node scripts/generate-template.js",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
+    "test:load": "LOAD_TEST=1 node --test --test-concurrency=1 test/load.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.7.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "knex": "^3.1.0",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.15.2"
+  },
+  "optionalDependencies": {
+    "pg": "^8.13.1"
+  }
+}

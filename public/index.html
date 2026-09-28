@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bulk WhatsApp Reminders</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Lending Desk</div>
+    <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+    <div class="user" id="user-box" hidden>
+      <span id="user-name"></span>
+      <button type="button" class="btn ghost small" id="logout-btn">Sign out</button>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="sidenav" id="sidenav" hidden>
+      <div class="nav-group">Payments</div>
+      <a href="#/bulk" data-nav="bulk">Bulk WhatsApp Reminders</a>
+      <a href="#/history" data-nav="history">Bulk Reminder History</a>
+      <div class="nav-group" data-admin-only>Settings</div>
+      <a href="#/template" data-nav="template" data-perm="whatsapp_settings.manage">Message Template</a>
+      <a href="#/audit" data-nav="audit" data-perm="audit_logs.view">Audit Log</a>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
