@@ -15,6 +15,7 @@ const COLUMNS = [
   { key: 'installment_number', header: 'Installment Number', required: false, aliases: ['installment', 'installmentno', 'emino', 'emi', 'installmentnumber'] },
   { key: 'collector_name', header: 'Employee/Collector', required: false, aliases: ['employee', 'collector', 'employeecollector', 'agent'] },
   { key: 'custom_message', header: 'Custom Message', required: false, aliases: ['message', 'custommessage', 'note', 'remarks'] },
+  { key: 'language', header: 'Language', required: false, aliases: ['lang', 'preferredlanguage', 'messagelanguage'] },
 ];
 
 class ExcelParseError extends Error {
@@ -143,6 +144,7 @@ async function buildTemplateWorkbook() {
     installment_number: '5',
     collector_name: 'Suresh',
     custom_message: 'SAMPLE ROW – delete this row before uploading (it is ignored on import)',
+    language: 'English',
   });
   sample.font = { italic: true, color: { argb: 'FF888888' } };
   sample.getCell('amount_due').numFmt = '0.00';
@@ -160,6 +162,7 @@ async function buildTemplateWorkbook() {
     installment_number: 'Installment/EMI number. Used for duplicate protection.',
     collector_name: 'Employee/collector responsible. Matched to application users for access control.',
     custom_message: 'Optional extra line added to the message.',
+    language: 'Optional. English, Telugu or Both (English + Telugu in one message). Empty = the language chosen for the batch.',
   };
   for (const c of COLUMNS) help.addRow([c.header, c.required ? 'Yes' : 'No', notes[c.key]]);
   help.addRow([]);

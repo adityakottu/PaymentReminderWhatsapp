@@ -232,6 +232,7 @@ class MessageWorker {
           text: job.message,
           variables: variablesForRecord(job),
           idempotencyKey: job.idempotency_key,
+          language: job.language || 'en',
         });
       } catch (err) {
         const pe =

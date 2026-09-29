@@ -1,6 +1,7 @@
 'use strict';
 
 const { normalizePhone } = require('./phone');
+const { parseLanguage } = require('./template');
 
 const LIMITS = { customer_name: 128, account_id: 64, installment_number: 16, collector_name: 128, custom_message: 500 };
 const MAX_AMOUNT = 1e11;
@@ -120,6 +121,8 @@ function validateRows(parsedRows, { internationalEnabled = false, defaultCountry
     if (installment_number) installment_number = installment_number.replace(/\.0+$/, '');
     const collector_name = textField(values, 'collector_name', reasons, 'Employee/Collector');
     const custom_message = textField(values, 'custom_message', reasons, 'Custom message');
+    const language = parseLanguage(values.language instanceof Date ? 'invalid' : values.language);
+    if (language === undefined) reasons.push('Language must be English, Telugu or Both');
 
     out.push({
       row_number: rowNumber,
@@ -133,6 +136,7 @@ function validateRows(parsedRows, { internationalEnabled = false, defaultCountry
       installment_number,
       collector_name,
       custom_message,
+      language: language || null,
       status: reasons.length ? 'INVALID' : 'VALID',
       reasons,
       warnings,

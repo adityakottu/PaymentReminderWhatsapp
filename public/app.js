@@ -78,6 +78,8 @@ function ymdToDmy(s) {
   return m ? `${m[3]}-${m[2]}-${m[1]}` : s || '—';
 }
 
+const LANG_LABEL = { en: 'English', te: 'తెలుగు Telugu', both: 'English + తెలుగు' };
+
 const STATUS = {
   PENDING: ['Pending', ''],
   QUEUED: ['Queued', 'info'],
@@ -489,8 +491,34 @@ async function renderValidation(batch) {
 async function renderReview(batch) {
   const readiness = await api('GET', `/bulk-reminders/batches/${batch.id}/send-readiness`);
   const canEdit = can('bulk_whatsapp_reminders.edit_batch_template');
-  const editor = h('textarea', { spellcheck: 'false', readonly: !canEdit, 'aria-label': 'Message template' });
+  const editor = h('textarea', { spellcheck: 'false', readonly: !canEdit, 'aria-label': 'English message template' });
   editor.value = batch.messageTemplate || '';
+  const editorTe = h('textarea', { spellcheck: 'false', readonly: !canEdit, lang: 'te', 'aria-label': 'Telugu message template' });
+  editorTe.value = batch.messageTemplateTe || '';
+  let language = batch.language || 'en';
+  const langChips = h('div', { class: 'chips' });
+  const enBlock = h('div', {}, h('h3', { class: 'lang-h' }, 'English message'), editor);
+  const teBlock = h('div', {}, h('h3', { class: 'lang-h' }, 'Telugu message (తెలుగు)'), editorTe);
+  function drawLanguage() {
+    langChips.replaceChildren(
+      ...Object.keys(LANG_LABEL).map((l) =>
+        h('button', {
+          class: `chip ${language === l ? 'active' : ''}`,
+          disabled: !canEdit,
+          'aria-pressed': String(language === l),
+          onclick: () => {
+            language = l;
+            drawLanguage();
+            if (saveBtn) saveBtn.disabled = false;
+            refreshPreview();
+          },
+        }, LANG_LABEL[l])
+      )
+    );
+    // Show the editors the chosen language needs (customers with their own Language column value may still use the other one).
+    enBlock.classList.toggle('dim', language === 'te');
+    teBlock.classList.toggle('dim', language === 'en');
+  }
   const previewBox = h('div');
   const errBox = h('ul', { class: 'errors' });
   const saveBtn = canEdit
@@ -498,7 +526,7 @@ async function renderReview(batch) {
         class: 'btn secondary small',
         onclick: async () => {
           try {
-            await api('PUT', `/bulk-reminders/batches/${batch.id}/template`, { template: editor.value });
+            await api('PUT', `/bulk-reminders/batches/${batch.id}/template`, { template: editor.value, templateTe: editorTe.value, language });
             toast('Message saved for this batch');
             saveBtn.disabled = true;
           } catch (e) {
@@ -510,14 +538,19 @@ async function renderReview(batch) {
     : null;
 
   const refreshPreview = debounce(async () => {
-    const data = await api('POST', `/bulk-reminders/batches/${batch.id}/preview`, { template: editor.value });
+    const data = await api('POST', `/bulk-reminders/batches/${batch.id}/preview`, { template: editor.value, templateTe: editorTe.value, language });
     errBox.replaceChildren(...data.validation.errors.map((e) => h('li', {}, e)));
-    previewBox.replaceChildren(...data.previews.map((p) => h('div', { class: 'bubble' }, h('div', { class: 'to' }, `To ${p.customerName} · ${p.phoneNumber}`), p.message)));
+    previewBox.replaceChildren(
+      ...data.previews.map((p) => h('div', { class: 'bubble', lang: p.language === 'en' ? 'en' : 'te' }, h('div', { class: 'to' }, `To ${p.customerName} · ${p.phoneNumber} · ${LANG_LABEL[p.language]}`), p.message))
+    );
   }, 300);
-  editor.addEventListener('input', () => {
-    if (saveBtn) saveBtn.disabled = false;
-    refreshPreview();
-  });
+  for (const ed of [editor, editorTe]) {
+    ed.addEventListener('input', () => {
+      if (saveBtn) saveBtn.disabled = false;
+      refreshPreview();
+    });
+  }
+  drawLanguage();
 
   const recBox = h('div');
   let page = 1;
@@ -530,8 +563,8 @@ async function renderReview(batch) {
         h(
           'table',
           {},
-          h('thead', {}, h('tr', {}, h('th', { class: 'num' }, 'Row'), h('th', {}, 'Customer'), h('th', {}, 'Phone'), h('th', { class: 'num' }, 'Amount'), h('th', {}, 'Due Date'), h('th', {}, 'Account'), h('th', {}, 'Collector'))),
-          h('tbody', {}, data.records.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rowNumber), h('td', {}, r.customerName), h('td', { class: 'mono' }, r.phoneNumber), h('td', { class: 'num' }, inr(r.amountDue)), h('td', {}, ymdToDmy(r.dueDate)), h('td', {}, r.accountId || '—'), h('td', {}, r.collectorName || '—'))))
+          h('thead', {}, h('tr', {}, h('th', { class: 'num' }, 'Row'), h('th', {}, 'Customer'), h('th', {}, 'Phone'), h('th', { class: 'num' }, 'Amount'), h('th', {}, 'Due Date'), h('th', {}, 'Account'), h('th', {}, 'Collector'), h('th', {}, 'Language'))),
+          h('tbody', {}, data.records.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rowNumber), h('td', {}, r.customerName), h('td', { class: 'mono' }, r.phoneNumber), h('td', { class: 'num' }, inr(r.amountDue)), h('td', {}, ymdToDmy(r.dueDate)), h('td', {}, r.accountId || '—'), h('td', {}, r.collectorName || '—'), h('td', {}, r.language ? LANG_LABEL[r.language] : h('span', { class: 'muted' }, 'Batch language')))))
         )
       ),
       pager(data.total, page, 25, (p) => {
@@ -550,7 +583,7 @@ async function renderReview(batch) {
       if (saveBtn && !saveBtn.disabled) return toast('Save the edited message first.', true);
       const ok = await confirmDialog({
         title: 'Send WhatsApp reminders?',
-        body: `You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}). This cannot be undone.`,
+        body: `You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}) in ${LANG_LABEL[language]}. Customers with their own Language value in the Excel get that language. This cannot be undone.`,
         confirmLabel: `Send ${num(readiness.recipients)} Reminders`,
         requireCheck: 'I confirm these customers should receive this reminder.',
       });
@@ -572,7 +605,10 @@ async function renderReview(batch) {
     h(
       'div',
       { class: 'two-col' },
-      h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Message Template'), h('span', { class: 'spacer' }), saveBtn), h('p', { class: 'muted' }, `Placeholders: ${state.config.templateVariables.map((v) => `{{${v}}}`).join(' ')} · conditional blocks: {{#if due_date}}…{{/if}}`), editor, errBox,
+      h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Message Template'), h('span', { class: 'spacer' }), saveBtn),
+        h('div', { class: 'row', style: 'margin:10px 0' }, h('strong', {}, 'Message language'), langChips),
+        h('p', { class: 'muted' }, `Placeholders: ${state.config.templateVariables.map((v) => `{{${v}}}`).join(' ')} · conditional blocks: {{#if due_date}}…{{/if}}. "English + తెలుగు" sends one message with the English text followed by the Telugu text. A Language column in the Excel overrides this per customer.`),
+        enBlock, teBlock, errBox,
         state.config.sendMode === 'template' ? h('div', { class: 'notice info', style: 'margin-top:10px' }, 'WhatsApp requires business-initiated messages to use a pre-approved template. The text above is stored with each record and used for the preview/report; the provider sends the approved template with these same values.') : null),
       h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, 'Message Preview'), previewBox)
     ),
@@ -930,16 +966,21 @@ async function renderHistory() {
 async function renderTemplateSettings() {
   setCrumbs('Settings', 'Message Template');
   const data = await api('GET', '/bulk-reminders/message-template');
-  const ta = h('textarea', { spellcheck: 'false' });
+  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'English template' });
   ta.value = data.body;
+  const taTe = h('textarea', { spellcheck: 'false', lang: 'te', 'aria-label': 'Telugu template' });
+  taTe.value = data.bodyTe;
   const msg = h('div');
   mount(
-    h('h1', {}, 'Default WhatsApp Message Template'),
-    h('p', { class: 'sub' }, `Used for new batches. Placeholders: ${data.variables.map((v) => `{{${v}}}`).join(' ')}`),
+    h('h1', {}, 'Default WhatsApp Message Templates'),
+    h('p', { class: 'sub' }, `Used for new batches (English and Telugu). Placeholders: ${data.variables.map((v) => `{{${v}}}`).join(' ')}`),
     h(
       'div',
       { class: 'panel' },
-      ta,
+      h('div', { class: 'two-col' },
+        h('div', {}, h('h3', { class: 'lang-h' }, 'English'), ta, h('button', { class: 'btn secondary small', style: 'margin-top:6px', onclick: () => (ta.value = data.defaultBody) }, 'Reset English to default')),
+        h('div', {}, h('h3', { class: 'lang-h' }, 'Telugu (తెలుగు)'), taTe, h('button', { class: 'btn secondary small', style: 'margin-top:6px', onclick: () => (taTe.value = data.defaultBodyTe) }, 'Reset Telugu to default'))
+      ),
       msg,
       h(
         'div',
@@ -948,15 +989,14 @@ async function renderTemplateSettings() {
           class: 'btn',
           onclick: async () => {
             try {
-              await api('PUT', '/bulk-reminders/message-template', { body: ta.value });
+              await api('PUT', '/bulk-reminders/message-template', { body: ta.value, bodyTe: taTe.value });
               msg.replaceChildren();
               toast('Template saved');
             } catch (e) {
               msg.replaceChildren(h('div', { class: 'notice bad', style: 'margin-top:10px' }, e.message));
             }
           },
-        }, 'Save Template'),
-        h('button', { class: 'btn secondary', onclick: () => (ta.value = data.defaultBody) }, 'Reset to default'),
+        }, 'Save Templates'),
         h('span', { class: 'muted' }, data.updatedAt ? `Last updated ${time(data.updatedAt)}` : 'Using built-in default')
       )
     )

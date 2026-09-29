@@ -19,6 +19,8 @@ const STATUS_LABEL = {
   CANCELLED: 'Cancelled',
 };
 
+const LANGUAGE_LABEL = { en: 'English', te: 'Telugu', both: 'English + Telugu' };
+
 /**
  * Neutralise spreadsheet formula injection: any text cell starting with
  * = + - @ (or tab/CR) is prefixed with an apostrophe so Excel treats it as text.
@@ -60,6 +62,7 @@ async function buildResultsWorkbook({ batch, records }) {
     { header: 'Sent Time', key: 'sentAt', width: 20 },
     { header: 'Delivered Time', key: 'deliveredAt', width: 20 },
     { header: 'Read Time', key: 'readAt', width: 20 },
+    { header: 'Language', key: 'language', width: 16 },
   ];
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: 'frozen', ySplit: 1 }];
@@ -78,12 +81,13 @@ async function buildResultsWorkbook({ batch, records }) {
       sentAt: fmtDateTime(r.sentAt),
       deliveredAt: fmtDateTime(r.deliveredAt),
       readAt: fmtDateTime(r.readAt),
+      language: LANGUAGE_LABEL[r.language] || '',
     });
     row.getCell('phoneNumber').numFmt = '@';
     row.getCell('amountDue').numFmt = '#,##0.00';
     row.getCell('message').alignment = { wrapText: false };
   }
-  ws.autoFilter = { from: 'A1', to: 'M1' };
+  ws.autoFilter = { from: 'A1', to: 'N1' };
 
   const s = wb.addWorksheet('Summary');
   s.columns = [{ width: 22 }, { width: 40 }];

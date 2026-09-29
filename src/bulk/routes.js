@@ -8,7 +8,9 @@ const { requestContext } = require('../audit/audit');
 const { buildTemplateWorkbook } = require('./excel');
 const { buildResultsWorkbook, streamResultsPdf } = require('./export');
 const { normalizePhone } = require('./phone');
-const { DEFAULT_TEMPLATE, VARIABLES } = require('./template');
+const { DEFAULT_TEMPLATE, DEFAULT_TEMPLATE_TE, VARIABLES, LANGUAGES } = require('./template');
+
+const str = (v) => (typeof v === 'string' ? v : undefined);
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -52,6 +54,7 @@ function createBulkRouter({ service, auth, config, audit }) {
       provider: config.whatsapp.provider,
       sendMode: config.whatsapp.sendMode,
       templateVariables: VARIABLES,
+      languages: LANGUAGES,
     })
   );
 
@@ -93,15 +96,18 @@ function createBulkRouter({ service, auth, config, audit }) {
     '/batches/:id/preview',
     json,
     wrap(async (req, res) => {
-      const template = req.body && typeof req.body.template === 'string' ? req.body.template : undefined;
-      res.json(await service.previewMessages(req.user, req.params.id, { template, limit: 3 }));
+      const b = req.body || {};
+      res.json(await service.previewMessages(req.user, req.params.id, { template: str(b.template), templateTe: str(b.templateTe), language: str(b.language), limit: 3 }));
     })
   );
   r.put(
     '/batches/:id/template',
     requirePermission(P.EDIT_BATCH_TEMPLATE),
     json,
-    wrap(async (req, res) => res.json({ batch: await service.setBatchTemplate(req.user, req.params.id, String((req.body && req.body.template) || ''), requestContext(req)) }))
+    wrap(async (req, res) => {
+      const b = req.body || {};
+      res.json({ batch: await service.setBatchTemplate(req.user, req.params.id, { template: str(b.template), templateTe: str(b.templateTe), language: str(b.language) }, requestContext(req)) });
+    })
   );
   r.get('/batches/:id/send-readiness', wrap(async (req, res) => res.json(await service.getSendReadiness(req.user, req.params.id))));
 
@@ -211,12 +217,15 @@ function createBulkRouter({ service, auth, config, audit }) {
   }
 
   // ---- global template (admin)
-  r.get('/message-template', wrap(async (req, res) => res.json({ ...(await service.getGlobalTemplate()), defaultBody: DEFAULT_TEMPLATE, variables: VARIABLES })));
+  r.get('/message-template', wrap(async (req, res) => res.json({ ...(await service.getGlobalTemplate()), defaultBody: DEFAULT_TEMPLATE, defaultBodyTe: DEFAULT_TEMPLATE_TE, variables: VARIABLES })));
   r.put(
     '/message-template',
     requirePermission(P.MANAGE_SETTINGS),
     json,
-    wrap(async (req, res) => res.json(await service.updateGlobalTemplate(req.user, String((req.body && req.body.body) || ''), requestContext(req))))
+    wrap(async (req, res) => {
+      const b = req.body || {};
+      res.json(await service.updateGlobalTemplate(req.user, { body: str(b.body), bodyTe: str(b.bodyTe) }, requestContext(req)));
+    })
   );
 
   // ---- consent / opt-outs (admin)

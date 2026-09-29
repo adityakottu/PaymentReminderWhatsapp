@@ -119,3 +119,8 @@ dialog h3 { margin-top: 0; }
 #toast { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
 #toast .t { background: var(--ink); color: #fff; padding: 10px 14px; border-radius: 6px; max-width: 380px; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
 #toast .t.bad { background: var(--bad); }
+
+.lang-h { font-size: 13px; margin: 12px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.dim { opacity: .55; }
+[lang=te] { font-family: "Noto Sans Telugu", "Nirmala UI", "Gautami", system-ui, sans-serif; line-height: 1.6; }
+textarea[lang=te] { font-family: "Noto Sans Telugu", "Nirmala UI", "Gautami", ui-monospace, monospace; }

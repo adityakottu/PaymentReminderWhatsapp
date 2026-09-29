@@ -65,6 +65,14 @@ function loadConfig(overrides = {}) {
       templateName: str('WHATSAPP_TEMPLATE_NAME', 'payment_reminder'),
       templateLanguage: str('WHATSAPP_TEMPLATE_LANGUAGE', 'en'),
       templateParams: list('WHATSAPP_TEMPLATE_PARAMS', ['customer_name', 'amount_due', 'due_date', 'account_id']),
+      // Approved templates for Telugu and bilingual (English + Telugu) messages.
+      // Meta lets one template name carry several language translations, so Telugu
+      // defaults to the same name with language code "te".
+      templateNameTe: str('WHATSAPP_TEMPLATE_NAME_TE', str('WHATSAPP_TEMPLATE_NAME', 'payment_reminder')),
+      templateLanguageTe: str('WHATSAPP_TEMPLATE_LANGUAGE_TE', 'te'),
+      templateNameBoth: str('WHATSAPP_TEMPLATE_NAME_BOTH', 'payment_reminder_bilingual'),
+      templateLanguageBoth: str('WHATSAPP_TEMPLATE_LANGUAGE_BOTH', 'en'),
+      templateParamsBoth: list('WHATSAPP_TEMPLATE_PARAMS_BOTH', null),
       requestTimeoutMs: int('WHATSAPP_REQUEST_TIMEOUT_MS', 15000),
       mockSimulateStatusCallbacks: bool('MOCK_SIMULATE_STATUS_CALLBACKS', true),
     },

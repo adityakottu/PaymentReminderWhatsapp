@@ -19,6 +19,16 @@ Excel upload ─► validation (bulk_upload_rows) ─► import (bulk_reminder_r
 > `authenticate` / `requirePermission` in `src/auth/auth.js` with the host app's
 > equivalents; the rest of the feature only depends on `req.user.permissions`.
 
+### Message languages (English / Telugu)
+
+Each batch has a **message language**: *English*, *Telugu (తెలుగు)* or *English + Telugu*. The last one sends one
+message with the English text first and the Telugu text below it. Pick the language on the **Review** step,
+where both templates can be edited and previewed. An optional **Language** column in the Excel (`English`,
+`Telugu` or `Both`) overrides the batch language for individual customers. Default templates for both
+languages are managed under **Settings → Message Template**. Each record stores the language it was sent in,
+and the Excel export includes it. The built-in Telugu text should be reviewed by a native speaker before
+production use.
+
 ---
 
 ## 1. Files
@@ -28,6 +38,7 @@ Excel upload ─► validation (bulk_upload_rows) ─► import (bulk_reminder_r
 | `src/config.js` | All configuration (env vars, defaults, production checks) |
 | `src/db.js` | Knex setup (SQLite for single server, PostgreSQL for scale) |
 | `migrations/20260928000001_bulk_whatsapp_reminders.js` | Schema |
+| `migrations/20260929000001_message_languages.js` | Message language (English / Telugu / both) columns |
 | `src/auth/auth.js`, `src/auth/permissions.js` | Sign-in (HttpOnly JWT cookie), roles, permissions, user admin API |
 | `src/audit/audit.js` | Append-only audit log |
 | `src/bulk/excel.js` | Excel parsing (header detection, aliases) + template workbook |
@@ -82,6 +93,8 @@ See `.env.example` for the complete list with comments. Key ones:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | – | Random string entered in Meta's webhook config |
 | `WHATSAPP_SEND_MODE` | `template` | `text` only valid inside a 24h service window |
 | `WHATSAPP_TEMPLATE_NAME` / `_LANGUAGE` / `_PARAMS` | `payment_reminder` / `en` / `customer_name,amount_due,due_date,account_id` | Must match the approved template |
+| `WHATSAPP_TEMPLATE_NAME_TE` / `_LANGUAGE_TE` | `payment_reminder` / `te` | Approved Telugu translation |
+| `WHATSAPP_TEMPLATE_NAME_BOTH` / `_LANGUAGE_BOTH` / `_PARAMS_BOTH` | `payment_reminder_bilingual` / `en` / same as `_PARAMS` | Approved bilingual (English + Telugu) template |
 | `MAX_RETRIES` | `3` | Total attempts for temporary failures |
 | `RETRY_BASE_DELAY_MS` / `RETRY_MAX_DELAY_MS` | 30 s / 15 min | Exponential back-off with jitter |
 | `WORKER_CONCURRENCY` | `5` | Parallel jobs per worker process |
@@ -105,6 +118,13 @@ See `.env.example` for the complete list with comments. Key ones:
    Hello {{1}}, this is a reminder regarding your pending payment of ₹{{2}}. Due date: {{3}}. Loan/Account ID: {{4}}. Please make the payment at your earliest convenience. Thank you.
    ```
    Keep `WHATSAPP_TEMPLATE_PARAMS` in the same order as `{{1}}..{{n}}`. Empty values are sent as `-` (Meta rejects empty parameters).
+   **Telugu:** add a Telugu (`te`) translation to the same template in WhatsApp Manager, e.g.
+   ```
+   నమస్కారం {{1}} గారు, మీరు చెల్లించవలసిన ₹{{2}} బకాయి గురించి ఇది ఒక రిమైండర్. చెల్లింపు గడువు తేదీ: {{3}}. లోన్/ఖాతా నంబర్: {{4}}. దయచేసి వీలైనంత త్వరగా చెల్లింపు చేయండి. ధన్యవాదాలు.
+   ```
+   **English + Telugu:** create a separate template (default name `payment_reminder_bilingual`) whose body has
+   the English text followed by the Telugu text. List its parameters in `WHATSAPP_TEMPLATE_PARAMS_BOTH`
+   (e.g. the four variables twice if each language uses its own `{{n}}`).
 7. Set `WHATSAPP_PROVIDER=meta_cloud` and `WHATSAPP_SEND_MODE=template`.
 
 **Switching providers.** Implement the contract in `src/whatsapp/provider.js`
@@ -172,7 +192,7 @@ All under `/api`, cookie-authenticated; state-changing requests need the header 
 Download from the UI (**Download Excel Template**) or `GET /api/bulk-reminders/template.xlsx`
 (a copy is in `templates/bulk-whatsapp-reminder-template.xlsx`). Columns: Customer Name*,
 Phone Number*, Amount Due*, Due Date (DD-MM-YYYY), Loan/Account ID, Installment Number,
-Employee/Collector, Custom Message. The single sample row is marked `SAMPLE` and is ignored on
+Employee/Collector, Custom Message, Language (English / Telugu / Both). The single sample row is marked `SAMPLE` and is ignored on
 import. Only `.xlsx` is accepted (legacy `.xls` gets a "Save As .xlsx" message).
 
 Optional: `macros/BulkReminderPrep.bas` normalises phones, highlights invalid/duplicate rows and

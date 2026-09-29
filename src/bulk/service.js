@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { nowIso, toIso } = require('../db');
 const { parseWorkbook, ExcelParseError } = require('./excel');
 const { validateRows } = require('./validation');
-const { DEFAULT_TEMPLATE, validateTemplate, renderForRecord } = require('./template');
+const { DEFAULT_TEMPLATE, DEFAULT_TEMPLATE_TE, LANGUAGES, validateTemplate, renderLocalized } = require('./template');
 const { HttpError } = require('../auth/auth');
 const { PERMISSIONS } = require('../auth/permissions');
 const {
@@ -20,6 +20,31 @@ const {
 const { ERROR_KIND } = require('../whatsapp/provider');
 
 const TEMPLATE_KEY = 'payment_reminder_default';
+const TEMPLATE_KEY_TE = 'payment_reminder_default_te';
+
+function assertLanguage(language) {
+  if (!Object.prototype.hasOwnProperty.call(LANGUAGES, language)) throw new HttpError(400, 'Language must be one of: en, te, both');
+}
+
+/** Template languages ('en' / 'te') needed to render the given message languages. */
+function templateLanguagesFor(languages) {
+  const out = new Set();
+  for (const l of languages) {
+    if (l === 'te' || l === 'both') out.add('te');
+    if (l !== 'te') out.add('en');
+  }
+  return out;
+}
+
+/** Validate the English and/or Telugu templates; label errors by language. */
+function validateTemplates(templates, needed) {
+  const errors = [];
+  for (const lang of needed) {
+    const v = validateTemplate(templates[lang]);
+    for (const e of v.errors) errors.push(`${lang === 'te' ? 'Telugu' : 'English'} template: ${e}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
 const CHUNK = 400;
 
 function chunks(arr, size = CHUNK) {
@@ -103,17 +128,40 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
   // --------------------------------------------------------------- template
 
   async function getGlobalTemplate() {
-    const row = await db('message_templates').where({ template_key: TEMPLATE_KEY }).first();
-    return row ? { body: row.body, updatedAt: toIso(row.updated_at), updatedBy: row.updated_by } : { body: DEFAULT_TEMPLATE, updatedAt: null, updatedBy: null };
+    const rows = await db('message_templates').whereIn('template_key', [TEMPLATE_KEY, TEMPLATE_KEY_TE]);
+    const en = rows.find((r) => r.template_key === TEMPLATE_KEY);
+    const te = rows.find((r) => r.template_key === TEMPLATE_KEY_TE);
+    const latest = [en, te].filter(Boolean).sort((a, b) => String(toIso(b.updated_at)).localeCompare(String(toIso(a.updated_at))))[0];
+    return {
+      body: en ? en.body : DEFAULT_TEMPLATE,
+      bodyTe: te ? te.body : DEFAULT_TEMPLATE_TE,
+      updatedAt: latest ? toIso(latest.updated_at) : null,
+      updatedBy: latest ? latest.updated_by : null,
+    };
   }
 
-  async function updateGlobalTemplate(user, body, ctx) {
-    const v = validateTemplate(body);
+  async function saveTemplateRow(key, body, userId) {
+    const existing = await db('message_templates').where({ template_key: key }).first();
+    if (existing) await db('message_templates').where({ id: existing.id }).update({ body, updated_by: userId, updated_at: now() });
+    else await db('message_templates').insert({ template_key: key, body, updated_by: userId, created_at: now(), updated_at: now() });
+  }
+
+  /** Update the default English (`body`) and/or Telugu (`bodyTe`) templates. */
+  async function updateGlobalTemplate(user, { body, bodyTe } = {}, ctx) {
+    const templates = { en: body, te: bodyTe };
+    const provided = ['en', 'te'].filter((l) => typeof templates[l] === 'string');
+    if (!provided.length) throw new HttpError(400, 'Nothing to update');
+    const v = validateTemplates(templates, provided);
     if (!v.ok) throw new HttpError(400, v.errors.join('; '), { errors: v.errors });
-    const existing = await db('message_templates').where({ template_key: TEMPLATE_KEY }).first();
-    if (existing) await db('message_templates').where({ id: existing.id }).update({ body, updated_by: user.id, updated_at: now() });
-    else await db('message_templates').insert({ template_key: TEMPLATE_KEY, body, updated_by: user.id, created_at: now(), updated_at: now() });
-    await audit.log({ actor: user, action: 'template.updated', description: `${user.username} updated the default WhatsApp reminder template`, details: { body }, ctx });
+    if (provided.includes('en')) await saveTemplateRow(TEMPLATE_KEY, body, user.id);
+    if (provided.includes('te')) await saveTemplateRow(TEMPLATE_KEY_TE, bodyTe, user.id);
+    await audit.log({
+      actor: user,
+      action: 'template.updated',
+      description: `${user.username} updated the default WhatsApp reminder template (${provided.map((l) => LANGUAGES[l]).join(', ')})`,
+      details: { body, bodyTe },
+      ctx,
+    });
     return getGlobalTemplate();
   }
 
@@ -208,6 +256,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
                 installment_number: r.installment_number,
                 collector_name: r.collector_name,
                 custom_message: r.custom_message,
+                language: r.language,
                 status: r.status,
                 reasons: r.reasons.length ? JSON.stringify(r.reasons) : null,
                 warnings: r.warnings.length ? JSON.stringify(r.warnings) : null,
@@ -279,9 +328,11 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       byName.set(u.display_name.toLowerCase(), u.id);
       byName.set(u.username.toLowerCase(), u.id);
     }
-    const template = (await getGlobalTemplate()).body;
+    const templates = await getGlobalTemplate();
     await db.transaction(async (trx) => {
-      const locked = await trx('bulk_upload_batches').where({ id: batch.id, status: B.VALIDATED }).update({ status: B.READY, message_template: template, updated_at: now() });
+      const locked = await trx('bulk_upload_batches')
+        .where({ id: batch.id, status: B.VALIDATED })
+        .update({ status: B.READY, message_template: templates.body, message_template_te: templates.bodyTe, updated_at: now() });
       if (!locked) throw new HttpError(409, 'Batch was already imported or cancelled');
       const ts = now();
       for (const part of chunks(valid, 200)) {
@@ -301,6 +352,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
               collector_name: r.collector_name,
               assigned_user_id: r.collector_name ? byName.get(r.collector_name.toLowerCase()) || null : null,
               custom_message: r.custom_message,
+              language: r.language || null,
               reminder_type: reminderType,
               dedupe_key: key,
               idempotency_key: `${batch.batch_number}:${key}`,
@@ -339,29 +391,77 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
 
   // ------------------------------------------------------------ review/send
 
-  async function setBatchTemplate(user, batchId, body, ctx) {
+  /** Effective templates + default language of a batch (falling back to the global defaults). */
+  async function batchTemplates(batch) {
+    const global = await getGlobalTemplate();
+    return {
+      templates: { en: batch.message_template || global.body, te: batch.message_template_te || global.bodyTe },
+      language: batch.language || 'en',
+    };
+  }
+
+  /** Languages that will actually be used: the batch default plus per-customer overrides. */
+  async function languagesInBatch(batch, defaultLanguage) {
+    const rows = await db('bulk_reminder_records').where({ batch_id: batch.id }).whereNotNull('language').distinct('language');
+    return new Set([defaultLanguage, ...rows.map((r) => r.language)]);
+  }
+
+  /**
+   * Edit the batch's message before sending: English template, Telugu template
+   * and/or the default language ('en' | 'te' | 'both'). Each field is optional.
+   */
+  async function setBatchTemplate(user, batchId, { template, templateTe, language } = {}, ctx) {
     const batch = await getOperableBatch(user, batchId);
     if (batch.status !== B.READY) throw new HttpError(409, 'The message can only be edited before sending starts');
-    const v = validateTemplate(body);
+    const patch = {};
+    const templates = { en: template, te: templateTe };
+    const provided = ['en', 'te'].filter((l) => typeof templates[l] === 'string');
+    const v = validateTemplates(templates, provided);
     if (!v.ok) throw new HttpError(400, v.errors.join('; '), { errors: v.errors });
-    await db('bulk_upload_batches').where({ id: batch.id }).update({ message_template: body, updated_at: now() });
-    await audit.log({ actor: user, action: 'bulk.template_edited', description: `${user.username} edited the message for ${batch.batch_number}`, batchId: batch.id, details: { body }, ctx });
+    if (provided.includes('en')) patch.message_template = template;
+    if (provided.includes('te')) patch.message_template_te = templateTe;
+    if (language !== undefined && language !== null) {
+      assertLanguage(language);
+      patch.language = language;
+    }
+    if (!Object.keys(patch).length) throw new HttpError(400, 'Nothing to update');
+    await db('bulk_upload_batches').where({ id: batch.id }).update({ ...patch, updated_at: now() });
+    const what = [provided.length ? 'message' : null, patch.language ? `language → ${LANGUAGES[patch.language]}` : null].filter(Boolean).join(', ');
+    await audit.log({
+      actor: user,
+      action: 'bulk.template_edited',
+      description: `${user.username} edited ${what} for ${batch.batch_number}`,
+      batchId: batch.id,
+      details: { template, templateTe, language },
+      ctx,
+    });
     return getBatchSummary(batch.id);
   }
 
-  async function previewMessages(user, batchId, { template, limit = 3 } = {}) {
+  async function previewMessages(user, batchId, { template, templateTe, language, limit = 3 } = {}) {
     const batch = await getVisibleBatch(user, batchId);
-    const body = template !== undefined && template !== null ? template : batch.message_template || (await getGlobalTemplate()).body;
-    const v = validateTemplate(body);
+    const current = await batchTemplates(batch);
+    const templates = {
+      en: typeof template === 'string' ? template : current.templates.en,
+      te: typeof templateTe === 'string' ? templateTe : current.templates.te,
+    };
+    const lang = language || current.language;
+    assertLanguage(lang);
+    const v = validateTemplates(templates, templateLanguagesFor(await languagesInBatch(batch, lang)));
     let sample = await db('bulk_reminder_records').where({ batch_id: batch.id }).modify(recordScope(user, batch)).orderBy('row_number').limit(Math.min(10, limit));
     if (!sample.length) {
       sample = await db('bulk_upload_rows').where({ batch_id: batch.id, status: 'VALID' }).orderBy('row_number').limit(Math.min(10, limit));
     }
     return {
-      template: body,
+      template: templates.en,
+      templateTe: templates.te,
+      language: lang,
       validation: v,
       previews: v.ok
-        ? sample.map((r) => ({ rowNumber: r.row_number, customerName: r.customer_name, phoneNumber: r.phone_number, message: renderForRecord(body, r) }))
+        ? sample.map((r) => {
+            const l = r.language || lang;
+            return { rowNumber: r.row_number, customerName: r.customer_name, phoneNumber: r.phone_number, language: l, message: renderLocalized(templates, l, r) };
+          })
         : [],
     };
   }
@@ -403,8 +503,8 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
     if (overrideDuplicates && !user.permissions.has(PERMISSIONS.OVERRIDE_DUPLICATES)) {
       throw new HttpError(403, 'You are not allowed to override duplicate-send protection');
     }
-    const body = batch.message_template || (await getGlobalTemplate()).body;
-    const v = validateTemplate(body);
+    const { templates, language } = await batchTemplates(batch);
+    const v = validateTemplates(templates, templateLanguagesFor(await languagesInBatch(batch, language)));
     if (!v.ok) throw new HttpError(400, `Message template is invalid: ${v.errors.join('; ')}`);
 
     const records = await db('bulk_reminder_records').where({ batch_id: batch.id, status: R.PENDING }).orderBy('row_number');
@@ -416,7 +516,9 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
     await db.transaction(async (trx) => {
       const ok = await trx('bulk_upload_batches').where({ id: batch.id, status: B.READY }).update({
         status: B.PROCESSING,
-        message_template: body,
+        message_template: templates.en,
+        message_template_te: templates.te,
+        language,
         override_duplicates: !!overrideDuplicates,
         started_by: user.id,
         started_at: now(),
@@ -429,7 +531,9 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
         await trx('bulk_reminder_records')
           .where({ id: r.id, status: R.PENDING })
           .update({
-            message: renderForRecord(body, r),
+            // Resolved language is stored per record so the provider can pick the matching approved template.
+            language: r.language || language,
+            message: renderLocalized(templates, r.language || language, r),
             status: R.QUEUED,
             queued_at: ts,
             next_attempt_at: ts,
@@ -445,7 +549,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       action: 'bulk.send_started',
       description: `${user.username} started WhatsApp batch ${batch.batch_number} (${records.length} recipients)`,
       batchId: batch.id,
-      details: { recipients: records.length, overrideDuplicates: !!overrideDuplicates },
+      details: { recipients: records.length, overrideDuplicates: !!overrideDuplicates, language },
       ctx,
     });
     return getBatchSummary(batch.id);
@@ -594,6 +698,8 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       successRatePct: decided ? Math.round((b.successful_records / decided) * 1000) / 10 : null,
       failureRatePct: decided ? Math.round((b.failed_records / decided) * 1000) / 10 : null,
       messageTemplate: b.message_template,
+      messageTemplateTe: b.message_template_te,
+      language: b.language || 'en',
       overrideDuplicates: !!b.override_duplicates,
       updatedAt: toIso(b.updated_at),
       ...extra,
@@ -623,6 +729,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       ...summary,
       scoped: true,
       messageTemplate: null,
+      messageTemplateTe: null,
       recipients: total,
       processed: successful + failed + cancelled,
       successful,
@@ -662,6 +769,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       installmentNumber: r.installment_number,
       collectorName: r.collector_name,
       message: r.message,
+      language: r.language || null,
       status: r.status,
       failureReason: r.failure_reason,
       providerErrorCode: r.provider_error_code,

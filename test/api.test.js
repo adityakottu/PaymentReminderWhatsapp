@@ -129,7 +129,7 @@ test('downloadable template has the expected columns and its sample row is never
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(r.data);
     const ws = wb.getWorksheet('Reminders');
-    assert.deepEqual(ws.getRow(1).values.slice(1), ['Customer Name', 'Phone Number', 'Amount Due', 'Due Date', 'Loan/Account ID', 'Installment Number', 'Employee/Collector', 'Custom Message']);
+    assert.deepEqual(ws.getRow(1).values.slice(1), ['Customer Name', 'Phone Number', 'Amount Due', 'Due Date', 'Loan/Account ID', 'Installment Number', 'Employee/Collector', 'Custom Message', 'Language']);
     assert.match(String(ws.getRow(2).getCell(8).value), /SAMPLE/);
     const up = await api.upload('/api/bulk-reminders/uploads', r.data, 'template.xlsx');
     assert.equal(up.status, 400, 'template with only the sample row has no data rows');
