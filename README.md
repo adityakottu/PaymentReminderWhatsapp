@@ -14,3 +14,5 @@ npm test
 
 Full documentation covers architecture, env vars, provider and webhook setup, API, deployment,
 and WhatsApp approval requirements: [docs/BULK_WHATSAPP_REMINDERS.md](docs/BULK_WHATSAPP_REMINDERS.md).
+
+**iOS and Android apps:** `mobile/` (Capacitor). See [docs/MOBILE_APPS.md](docs/MOBILE_APPS.md).

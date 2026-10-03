@@ -1,0 +1,15 @@
+{
+  "appId": "com.lendingdesk.paymentreminders",
+  "appName": "Payment Reminders",
+  "webDir": "www",
+  "backgroundColor": "#1f6f50",
+  "android": {
+    "allowMixedContent": false
+  },
+  "ios": {
+    "contentInset": "never"
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": false }
+  }
+}

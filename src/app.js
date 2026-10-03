@@ -53,6 +53,23 @@ function createApplication({ db, config, provider, logger = console, clock }) {
     }
   });
 
+  // CORS for the mobile app's web view (bearer-token auth, no cookies).
+  const corsOrigins = new Set(config.corsOrigins || []);
+  app.use('/api', (req, res, next) => {
+    const origin = req.get('origin');
+    if (origin && corsOrigins.has(origin)) {
+      res.set({
+        'Access-Control-Allow-Origin': origin,
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Requested-With',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Expose-Headers': 'Content-Disposition',
+        'Access-Control-Max-Age': '600',
+        Vary: 'Origin',
+      });
+      if (req.method === 'OPTIONS') return res.sendStatus(204);
+    }
+    next();
+  });
   app.use(cookieParser());
   app.use('/api', auth.csrfGuard);
   app.use('/api/auth', auth.router);

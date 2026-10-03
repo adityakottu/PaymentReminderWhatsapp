@@ -1,0 +1,26 @@
+{
+  "name": "payment-reminders-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "iOS and Android app (Capacitor) for Bulk WhatsApp Payment Reminders. Bundles ../public and talks to the server API.",
+  "scripts": {
+    "build:web": "node scripts/build-web.js",
+    "sync": "npm run build:web && cap sync",
+    "android": "npm run sync && cap open android",
+    "ios": "npm run sync && cap open ios",
+    "build:android": "npm run sync && cd android && ./gradlew assembleDebug"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/ios": "^8.5.2",
+    "@capacitor/share": "^8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2"
+  }
+}

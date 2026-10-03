@@ -1,0 +1,92 @@
+name: Mobile apps
+
+# Builds the Android and iOS apps (Capacitor) from mobile/ + public/.
+#  - Android: debug APK always; signed release AAB (for Google Play) when the
+#    ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS /
+#    ANDROID_KEY_PASSWORD secrets are set.
+#  - iOS: simulator build (no Apple account needed) to prove the project compiles.
+#    App Store / TestFlight builds need signing – see docs/MOBILE_APPS.md.
+on:
+  push:
+    paths: ["mobile/**", "public/**", ".github/workflows/mobile.yml"]
+  pull_request:
+    paths: ["mobile/**", "public/**", ".github/workflows/mobile.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npm run build:web && npx cap sync android
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+        env:
+          APP_VERSION_CODE: ${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payment-reminders-android-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Build signed release bundle (Google Play)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          APP_VERSION_CODE: ${{ github.run_number }}
+        if: ${{ env.KEYSTORE_B64 != '' }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          cd android && ./gradlew bundleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        if: ${{ hashFiles('mobile/android/app/build/outputs/bundle/release/*.aab') != '' }}
+        with:
+          name: payment-reminders-android-release-aab
+          path: mobile/android/app/build/outputs/bundle/release/*.aab
+
+  ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm run build:web && npx cap sync ios
+      - name: Build for iOS Simulator (unsigned)
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - name: Package simulator app
+        run: cd build/Build/Products/Debug-iphonesimulator && zip -qry "$GITHUB_WORKSPACE/PaymentReminders-simulator.zip" App.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payment-reminders-ios-simulator-app
+          path: PaymentReminders-simulator.zip

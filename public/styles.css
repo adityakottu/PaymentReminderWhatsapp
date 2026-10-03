@@ -21,6 +21,7 @@
   background: var(--bg);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; font-size: 14px; line-height: 1.45; }
 a { color: var(--brand); }
 button, input, textarea, select { font: inherit; }
@@ -97,7 +98,7 @@ tr.clickable:hover td { background: #f7faf8; }
 input[type=text], input[type=password], input[type=search], textarea { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fff; }
 textarea { width: 100%; min-height: 240px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } .sidenav { display: none; } }
+@media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
 .bubble { background: #dcf8c6; border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; margin-bottom: 10px; box-shadow: 0 1px 1px rgba(0,0,0,.08); max-width: 460px; }
 .bubble .to { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .errors { color: var(--bad); margin: 8px 0 0; padding-left: 18px; }
@@ -124,3 +125,30 @@ dialog h3 { margin-top: 0; }
 .dim { opacity: .55; }
 [lang=te] { font-family: "Noto Sans Telugu", "Nirmala UI", "Gautami", system-ui, sans-serif; line-height: 1.6; }
 textarea[lang=te] { font-family: "Noto Sans Telugu", "Nirmala UI", "Gautami", ui-monospace, monospace; }
+
+/* ---------- phones / mobile app ---------- */
+.menu-btn { display: none; background: none; border: 0; color: inherit; font-size: 22px; line-height: 1; padding: 4px 8px 4px 0; cursor: pointer; }
+.small { font-size: 12px; }
+.topbar { padding-top: max(10px, env(safe-area-inset-top)); padding-left: max(20px, env(safe-area-inset-left)); padding-right: max(20px, env(safe-area-inset-right)); }
+main { padding-bottom: max(60px, env(safe-area-inset-bottom)); }
+@media (max-width: 900px) {
+  .menu-btn:not([hidden]) { display: block; }
+  .crumbs { display: none; }
+  .topbar { gap: 10px; padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
+  #user-name { display: none; }
+  .sidenav { position: fixed; z-index: 40; top: 0; bottom: 0; left: 0; width: 260px; padding-top: max(14px, env(safe-area-inset-top)); transform: translateX(-105%); transition: transform .2s ease; box-shadow: 0 0 30px rgba(0,0,0,.25); }
+  body.nav-open .sidenav { transform: none; }
+  body.nav-open::after { content: ''; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 30; }
+  main { padding: 16px 14px 60px; }
+  h1 { font-size: 19px; }
+  .steps li span { display: none; }
+  .steps li { padding: 8px; font-size: 12px; }
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .card .v { font-size: 19px; }
+  .panel { padding: 14px; }
+  .dropzone { padding: 28px 12px; }
+  input[type=search] { min-width: 0 !important; width: 100%; }
+  .login { margin: 4vh auto; }
+  dialog { max-width: calc(100vw - 24px); }
+}
+html.native { -webkit-tap-highlight-color: transparent; }

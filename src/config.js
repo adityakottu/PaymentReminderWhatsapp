@@ -37,6 +37,9 @@ function loadConfig(overrides = {}) {
     env,
     port: int('PORT', 3000),
     trustProxy: bool('TRUST_PROXY', false),
+    // Origins allowed to call the API cross-origin: the iOS (capacitor://localhost)
+    // and Android (https://localhost) app web views.
+    corsOrigins: list('CORS_ORIGINS', ['capacitor://localhost', 'https://localhost', 'http://localhost']),
 
     database: {
       client: str('DATABASE_CLIENT', 'better-sqlite3'),
@@ -47,6 +50,7 @@ function loadConfig(overrides = {}) {
     auth: {
       jwtSecret: str('JWT_SECRET', env === 'production' ? null : 'dev-only-insecure-secret-change-me'),
       sessionTtlHours: int('SESSION_TTL_HOURS', 12),
+      mobileSessionTtlHours: int('MOBILE_SESSION_TTL_HOURS', 7 * 24),
       cookieSecure: bool('COOKIE_SECURE', env === 'production'),
     },
 
