@@ -129,7 +129,7 @@ test('downloadable template has the expected columns and its sample row is never
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(r.data);
     const ws = wb.getWorksheet('Reminders');
-    assert.deepEqual(ws.getRow(1).values.slice(1), ['Customer Name', 'Phone Number', 'Amount Due', 'Due Date', 'Loan/Account ID', 'Installment Number', 'Employee/Collector', 'Custom Message']);
+    assert.deepEqual(ws.getRow(1).values.slice(1), ['Customer Name', 'Phone Number', 'Amount Due', 'Due Date', 'Loan/Account ID', 'Installment Number', 'Employee/Collector', 'Custom Message', 'Language']);
     assert.match(String(ws.getRow(2).getCell(8).value), /SAMPLE/);
     const up = await api.upload('/api/bulk-reminders/uploads', r.data, 'template.xlsx');
     assert.equal(up.status, 400, 'template with only the sample row has no data rows');
@@ -312,6 +312,59 @@ test('history, records filters and search', async () => {
     const att = await admin.get(`/api/bulk-reminders/batches/${id}/records/${(await records(env.db, id))[1].id}/attempts`);
     assert.equal(att.data.attempts.length, 1);
     assert.equal(att.data.attempts[0].errorCode, '131026');
+  } finally {
+    await env.close();
+  }
+});
+
+test('mobile app: bearer-token login, CORS for the app origins, no CSRF header needed', async () => {
+  const env = await setup({ script: () => 'success' });
+  try {
+    // Pre-flight from the iOS app web view.
+    let res = await fetch(`${env.base}/api/auth/login`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'capacitor://localhost', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,authorization' },
+    });
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get('access-control-allow-origin'), 'capacitor://localhost');
+    assert.match(res.headers.get('access-control-allow-headers'), /Authorization/);
+    // Unknown origins get no CORS headers.
+    res = await fetch(`${env.base}/api/auth/login`, { method: 'OPTIONS', headers: { Origin: 'https://evil.example', 'Access-Control-Request-Method': 'POST' } });
+    assert.equal(res.headers.get('access-control-allow-origin'), null);
+
+    res = await fetch(`${env.base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch', Origin: 'https://localhost' },
+      body: JSON.stringify({ username: 'admin', password: 'correct-horse-battery', client: 'mobile' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('set-cookie'), null, 'mobile login does not set a cookie');
+    assert.equal(res.headers.get('access-control-allow-origin'), 'https://localhost');
+    const { token, user, expiresIn } = await res.json();
+    assert.ok(token && user.username === 'admin');
+    assert.equal(expiresIn, 7 * 24 * 3600);
+
+    const auth = { Authorization: `Bearer ${token}` };
+    res = await fetch(`${env.base}/api/auth/me`, { headers: auth });
+    assert.equal(res.status, 200);
+    // Upload + import with bearer only (no cookie, no X-Requested-With).
+    const form = new FormData();
+    form.append('file', new Blob([await makeXlsx(customers(2, { phoneFor: (i) => `987654321${i}` }))]), 'm.xlsx');
+    res = await fetch(`${env.base}/api/bulk-reminders/uploads`, { method: 'POST', headers: auth, body: form });
+    assert.equal(res.status, 201);
+    const id = (await res.json()).batch.id;
+    res = await fetch(`${env.base}/api/bulk-reminders/batches/${id}/import`, { method: 'POST', headers: auth });
+    assert.equal(res.status, 200);
+    res = await fetch(`${env.base}/api/bulk-reminders/batches/${id}/export.xlsx`, { headers: { ...auth, Origin: 'capacitor://localhost' } });
+    assert.equal(res.headers.get('access-control-expose-headers'), 'Content-Disposition');
+
+    // A tampered token is rejected.
+    res = await fetch(`${env.base}/api/auth/me`, { headers: { Authorization: `Bearer ${token}x` } });
+    assert.equal(res.status, 401);
+    // Cookie sessions still require the CSRF header.
+    const web = await login(env.base, 'admin');
+    res = await fetch(`${env.base}/api/bulk-reminders/batches/${id}/cancel-upload`, { method: 'POST', headers: { Cookie: web.cookie } });
+    assert.equal(res.status, 403);
   } finally {
     await env.close();
   }

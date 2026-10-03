@@ -3,7 +3,30 @@
 /* Bulk WhatsApp Reminders – single page UI (no build step).
  * All dynamic content is inserted with textContent (never innerHTML) to avoid XSS. */
 
-const API = '/api';
+// Inside the iOS/Android app (Capacitor) the UI is bundled with the app, so it talks to a
+// configurable server with a bearer token. In a browser it uses same-origin + HttpOnly cookie.
+const NATIVE = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+const store = {
+  get(k) {
+    try {
+      return localStorage.getItem(k);
+    } catch (_) {
+      return null;
+    }
+  },
+  set(k, v) {
+    try {
+      if (v === null || v === undefined) localStorage.removeItem(k);
+      else localStorage.setItem(k, v);
+    } catch (_) {}
+  },
+};
+const serverUrl = () => (NATIVE ? store.get('serverUrl') || '' : '');
+const apiUrl = (path) => `${serverUrl()}/api${path}`;
+function authHeaders() {
+  const token = NATIVE ? store.get('token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 const state = { user: null, config: null };
 let teardown = [];
 
@@ -29,14 +52,24 @@ function h(tag, props, ...children) {
 }
 
 async function api(method, path, body, { raw } = {}) {
-  const opts = { method, headers: { 'X-Requested-With': 'fetch' }, credentials: 'same-origin' };
+  const opts = { method, headers: { 'X-Requested-With': 'fetch', ...authHeaders() }, credentials: NATIVE ? 'omit' : 'same-origin' };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(API + path, opts);
+  if (NATIVE && !serverUrl()) {
+    location.hash = '#/login';
+    throw new Error('Set the server address first');
+  }
+  let res;
+  try {
+    res = await fetch(apiUrl(path), opts);
+  } catch (_) {
+    throw new Error(NATIVE ? `Cannot reach the server at ${serverUrl()}. Check the address and your internet connection.` : 'Network error');
+  }
   if (res.status === 401 && !path.startsWith('/auth/')) {
     state.user = null;
+    if (NATIVE) store.set('token', null);
     location.hash = '#/login';
     throw new Error('Please sign in');
   }
@@ -49,6 +82,97 @@ async function api(method, path, body, { raw } = {}) {
     throw err;
   }
   return data;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1]);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+/**
+ * A download link. In the browser it is a normal link (cookie auth). In the app the
+ * file is fetched with the bearer token, saved to the cache and opened in the share
+ * sheet (save to Files, WhatsApp, email, …).
+ */
+function downloadLink(path, label, fallbackName, cls = 'btn secondary') {
+  if (!NATIVE) return h('a', { class: cls, href: apiUrl(path) }, label);
+  return h('button', {
+    class: cls,
+    onclick: async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const res = await fetch(apiUrl(path), { headers: authHeaders() });
+        if (!res.ok) throw new Error(`Download failed (${res.status})`);
+        const m = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '');
+        const name = (m ? m[1] : fallbackName).replace(/[^\w.\-]/g, '_');
+        const { Filesystem, Share } = window.Capacitor.Plugins;
+        const { uri } = await Filesystem.writeFile({ path: name, data: await blobToBase64(await res.blob()), directory: 'CACHE' });
+        await Share.share({ title: name, files: [uri] });
+      } catch (err) {
+        if (!/cancel/i.test(String(err && err.message))) toast(err.message || 'Download failed', true);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, label);
+}
+
+/**
+ * Live batch updates. Browser: EventSource (cookie). App: EventSource cannot send an
+ * Authorization header, so read the same event stream with fetch and reconnect when
+ * the connection drops (e.g. the phone was locked).
+ */
+function openStream(path, onSummary) {
+  if (!NATIVE) {
+    const es = new EventSource(apiUrl(path));
+    es.addEventListener('summary', (e) => onSummary(JSON.parse(e.data)));
+    return () => es.close();
+  }
+  let stopped = false;
+  let ctrl = null;
+  (async () => {
+    while (!stopped) {
+      try {
+        ctrl = new AbortController();
+        const res = await fetch(apiUrl(path), { headers: authHeaders(), signal: ctrl.signal });
+        if (res.status === 401) {
+          store.set('token', null);
+          state.user = null;
+          location.hash = '#/login';
+          return;
+        }
+        if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const chunk = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const ev = /^event: (.*)$/m.exec(chunk);
+            const data = /^data: (.*)$/m.exec(chunk);
+            if (ev && ev[1] === 'summary' && data) onSummary(JSON.parse(data[1]));
+          }
+        }
+      } catch (_) {
+        if (stopped) return;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  })();
+  return () => {
+    stopped = true;
+    if (ctrl) ctrl.abort();
+  };
 }
 
 function can(p) {
@@ -77,6 +201,8 @@ function ymdToDmy(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
   return m ? `${m[3]}-${m[2]}-${m[1]}` : s || '—';
 }
+
+const LANG_LABEL = { en: 'English', te: 'తెలుగు Telugu', both: 'English + తెలుగు' };
 
 const STATUS = {
   PENDING: ['Pending', ''],
@@ -217,6 +343,8 @@ async function route() {
 
 function renderChrome() {
   const logged = !!state.user;
+  document.body.classList.remove('nav-open');
+  document.getElementById('menu-btn').hidden = !logged;
   document.getElementById('sidenav').hidden = !logged;
   document.getElementById('user-box').hidden = !logged;
   if (!logged) return;
@@ -236,6 +364,8 @@ function renderLogin() {
   const u = h('input', { type: 'text', id: 'u', autocomplete: 'username', required: true });
   const p = h('input', { type: 'password', id: 'p', autocomplete: 'current-password', required: true });
   const err = h('div', { class: 'errors' });
+  const srv = NATIVE ? h('input', { type: 'url', id: 's', placeholder: 'https://reminders.example.com', autocomplete: 'url', inputmode: 'url', autocapitalize: 'off', required: true }) : null;
+  if (srv) srv.value = store.get('serverUrl') || '';
   const form = h(
     'form',
     {
@@ -244,7 +374,15 @@ function renderLogin() {
         e.preventDefault();
         err.textContent = '';
         try {
-          state.user = (await api('POST', '/auth/login', { username: u.value, password: p.value })).user;
+          if (srv) {
+            const url = srv.value.trim().replace(/\/+$/, '');
+            if (!/^https:\/\/[^\s/]+/i.test(url)) throw new Error('Enter the server address starting with https://');
+            store.set('serverUrl', url);
+          }
+          const data = await api('POST', '/auth/login', { username: u.value, password: p.value, ...(NATIVE ? { client: 'mobile' } : {}) });
+          if (NATIVE) store.set('token', data.token);
+          state.user = data.user;
+          state.config = null;
           location.hash = '#/bulk';
         } catch (ex) {
           err.textContent = ex.message;
@@ -252,6 +390,7 @@ function renderLogin() {
       },
     },
     h('h1', {}, 'Sign in'),
+    srv ? [h('label', { for: 's' }, 'Server address'), srv, h('div', { class: 'muted small' }, 'Ask your administrator for this address.')] : null,
     h('label', { for: 'u' }, 'Username'),
     u,
     h('label', { for: 'p' }, 'Password'),
@@ -260,7 +399,7 @@ function renderLogin() {
     h('p', {}, h('button', { class: 'btn', type: 'submit' }, 'Sign in'))
   );
   mount(form);
-  u.focus();
+  (srv && !srv.value ? srv : u).focus();
 }
 
 // --------------------------------------------------------- STEP 1: upload
@@ -278,8 +417,8 @@ function renderUpload() {
   const zone = h(
     'div',
     { class: 'dropzone', tabindex: '0', role: 'button', 'aria-label': 'Upload Excel file' },
-    h('strong', {}, 'Drag & drop your Excel file here'),
-    h('div', { class: 'muted' }, `or click to choose a file · .xlsx only · max ${cfg.maxUploadMb} MB · up to ${num(cfg.maxRows)} rows`)
+    h('strong', {}, NATIVE ? 'Tap to choose an Excel file' : 'Drag & drop your Excel file here'),
+    h('div', { class: 'muted' }, `${NATIVE ? 'From Files, Drive or email attachments' : 'or click to choose a file'} · .xlsx only · max ${cfg.maxUploadMb} MB · up to ${num(cfg.maxRows)} rows`)
   );
 
   function upload(file) {
@@ -296,8 +435,9 @@ function renderUpload() {
     const fd = new FormData();
     fd.append('file', file);
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API}/bulk-reminders/uploads`);
+    xhr.open('POST', apiUrl('/bulk-reminders/uploads'));
     xhr.setRequestHeader('X-Requested-With', 'fetch');
+    for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
     progress.hidden = false;
     status.textContent = `Uploading ${file.name}…`;
     xhr.upload.onprogress = (e) => {
@@ -349,7 +489,7 @@ function renderUpload() {
     h(
       'div',
       { class: 'panel' },
-      h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Upload Excel'), h('span', { class: 'spacer' }), h('a', { class: 'btn secondary', href: `${API}/bulk-reminders/template.xlsx` }, '⬇ Download Excel Template')),
+      h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Upload Excel'), h('span', { class: 'spacer' }), downloadLink('/bulk-reminders/template.xlsx', '⬇ Download Excel Template', 'bulk-whatsapp-reminder-template.xlsx')),
       h('p', { class: 'muted' }, 'Required columns: Customer Name, Phone Number, Amount Due. Optional: Due Date, Loan/Account ID, Installment Number, Employee/Collector, Custom Message. Phone numbers do not need a "+" – Indian 10-digit numbers get the 91 prefix automatically.'),
       canUpload ? [zone, fileInput] : h('div', { class: 'notice info' }, 'You can view reminder status, but uploading requires the upload permission.'),
       h('div', { style: 'margin-top:12px' }, progress),
@@ -489,8 +629,34 @@ async function renderValidation(batch) {
 async function renderReview(batch) {
   const readiness = await api('GET', `/bulk-reminders/batches/${batch.id}/send-readiness`);
   const canEdit = can('bulk_whatsapp_reminders.edit_batch_template');
-  const editor = h('textarea', { spellcheck: 'false', readonly: !canEdit, 'aria-label': 'Message template' });
+  const editor = h('textarea', { spellcheck: 'false', readonly: !canEdit, 'aria-label': 'English message template' });
   editor.value = batch.messageTemplate || '';
+  const editorTe = h('textarea', { spellcheck: 'false', readonly: !canEdit, lang: 'te', 'aria-label': 'Telugu message template' });
+  editorTe.value = batch.messageTemplateTe || '';
+  let language = batch.language || 'en';
+  const langChips = h('div', { class: 'chips' });
+  const enBlock = h('div', {}, h('h3', { class: 'lang-h' }, 'English message'), editor);
+  const teBlock = h('div', {}, h('h3', { class: 'lang-h' }, 'Telugu message (తెలుగు)'), editorTe);
+  function drawLanguage() {
+    langChips.replaceChildren(
+      ...Object.keys(LANG_LABEL).map((l) =>
+        h('button', {
+          class: `chip ${language === l ? 'active' : ''}`,
+          disabled: !canEdit,
+          'aria-pressed': String(language === l),
+          onclick: () => {
+            language = l;
+            drawLanguage();
+            if (saveBtn) saveBtn.disabled = false;
+            refreshPreview();
+          },
+        }, LANG_LABEL[l])
+      )
+    );
+    // Show the editors the chosen language needs (customers with their own Language column value may still use the other one).
+    enBlock.classList.toggle('dim', language === 'te');
+    teBlock.classList.toggle('dim', language === 'en');
+  }
   const previewBox = h('div');
   const errBox = h('ul', { class: 'errors' });
   const saveBtn = canEdit
@@ -498,7 +664,7 @@ async function renderReview(batch) {
         class: 'btn secondary small',
         onclick: async () => {
           try {
-            await api('PUT', `/bulk-reminders/batches/${batch.id}/template`, { template: editor.value });
+            await api('PUT', `/bulk-reminders/batches/${batch.id}/template`, { template: editor.value, templateTe: editorTe.value, language });
             toast('Message saved for this batch');
             saveBtn.disabled = true;
           } catch (e) {
@@ -510,14 +676,19 @@ async function renderReview(batch) {
     : null;
 
   const refreshPreview = debounce(async () => {
-    const data = await api('POST', `/bulk-reminders/batches/${batch.id}/preview`, { template: editor.value });
+    const data = await api('POST', `/bulk-reminders/batches/${batch.id}/preview`, { template: editor.value, templateTe: editorTe.value, language });
     errBox.replaceChildren(...data.validation.errors.map((e) => h('li', {}, e)));
-    previewBox.replaceChildren(...data.previews.map((p) => h('div', { class: 'bubble' }, h('div', { class: 'to' }, `To ${p.customerName} · ${p.phoneNumber}`), p.message)));
+    previewBox.replaceChildren(
+      ...data.previews.map((p) => h('div', { class: 'bubble', lang: p.language === 'en' ? 'en' : 'te' }, h('div', { class: 'to' }, `To ${p.customerName} · ${p.phoneNumber} · ${LANG_LABEL[p.language]}`), p.message))
+    );
   }, 300);
-  editor.addEventListener('input', () => {
-    if (saveBtn) saveBtn.disabled = false;
-    refreshPreview();
-  });
+  for (const ed of [editor, editorTe]) {
+    ed.addEventListener('input', () => {
+      if (saveBtn) saveBtn.disabled = false;
+      refreshPreview();
+    });
+  }
+  drawLanguage();
 
   const recBox = h('div');
   let page = 1;
@@ -530,8 +701,8 @@ async function renderReview(batch) {
         h(
           'table',
           {},
-          h('thead', {}, h('tr', {}, h('th', { class: 'num' }, 'Row'), h('th', {}, 'Customer'), h('th', {}, 'Phone'), h('th', { class: 'num' }, 'Amount'), h('th', {}, 'Due Date'), h('th', {}, 'Account'), h('th', {}, 'Collector'))),
-          h('tbody', {}, data.records.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rowNumber), h('td', {}, r.customerName), h('td', { class: 'mono' }, r.phoneNumber), h('td', { class: 'num' }, inr(r.amountDue)), h('td', {}, ymdToDmy(r.dueDate)), h('td', {}, r.accountId || '—'), h('td', {}, r.collectorName || '—'))))
+          h('thead', {}, h('tr', {}, h('th', { class: 'num' }, 'Row'), h('th', {}, 'Customer'), h('th', {}, 'Phone'), h('th', { class: 'num' }, 'Amount'), h('th', {}, 'Due Date'), h('th', {}, 'Account'), h('th', {}, 'Collector'), h('th', {}, 'Language'))),
+          h('tbody', {}, data.records.map((r) => h('tr', {}, h('td', { class: 'num' }, r.rowNumber), h('td', {}, r.customerName), h('td', { class: 'mono' }, r.phoneNumber), h('td', { class: 'num' }, inr(r.amountDue)), h('td', {}, ymdToDmy(r.dueDate)), h('td', {}, r.accountId || '—'), h('td', {}, r.collectorName || '—'), h('td', {}, r.language ? LANG_LABEL[r.language] : h('span', { class: 'muted' }, 'Batch language')))))
         )
       ),
       pager(data.total, page, 25, (p) => {
@@ -550,7 +721,7 @@ async function renderReview(batch) {
       if (saveBtn && !saveBtn.disabled) return toast('Save the edited message first.', true);
       const ok = await confirmDialog({
         title: 'Send WhatsApp reminders?',
-        body: `You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}). This cannot be undone.`,
+        body: `You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}) in ${LANG_LABEL[language]}. Customers with their own Language value in the Excel get that language. This cannot be undone.`,
         confirmLabel: `Send ${num(readiness.recipients)} Reminders`,
         requireCheck: 'I confirm these customers should receive this reminder.',
       });
@@ -572,7 +743,10 @@ async function renderReview(batch) {
     h(
       'div',
       { class: 'two-col' },
-      h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Message Template'), h('span', { class: 'spacer' }), saveBtn), h('p', { class: 'muted' }, `Placeholders: ${state.config.templateVariables.map((v) => `{{${v}}}`).join(' ')} · conditional blocks: {{#if due_date}}…{{/if}}`), editor, errBox,
+      h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Message Template'), h('span', { class: 'spacer' }), saveBtn),
+        h('div', { class: 'row', style: 'margin:10px 0' }, h('strong', {}, 'Message language'), langChips),
+        h('p', { class: 'muted' }, `Placeholders: ${state.config.templateVariables.map((v) => `{{${v}}}`).join(' ')} · conditional blocks: {{#if due_date}}…{{/if}}. "English + తెలుగు" sends one message with the English text followed by the Telugu text. A Language column in the Excel overrides this per customer.`),
+        enBlock, teBlock, errBox,
         state.config.sendMode === 'template' ? h('div', { class: 'notice info', style: 'margin-top:10px' }, 'WhatsApp requires business-initiated messages to use a pre-approved template. The text above is stored with each record and used for the preview/report; the provider sends the approved template with these same values.') : null),
       h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, 'Message Preview'), previewBox)
     ),
@@ -663,8 +837,8 @@ async function renderDashboard(initial) {
         canControl && (running || paused)
           ? h('button', { class: 'btn danger', onclick: act('cancel', 'Remaining messages cancelled', { title: 'Cancel remaining messages?', body: 'Messages already sent stay sent. Messages not yet sent will be marked Cancelled. History is kept.', confirmLabel: 'Cancel Remaining', danger: true }) }, 'Cancel Remaining')
           : null,
-        can('bulk_whatsapp_reminders.export') ? h('a', { class: 'btn secondary', href: `${API}/bulk-reminders/batches/${batch.id}/export.xlsx` }, 'Export Excel') : null,
-        can('bulk_whatsapp_reminders.export') ? h('a', { class: 'btn secondary', href: `${API}/bulk-reminders/batches/${batch.id}/export.pdf` }, 'Export PDF') : null
+        can('bulk_whatsapp_reminders.export') ? downloadLink(`/bulk-reminders/batches/${batch.id}/export.xlsx`, 'Export Excel', `${batch.batchNumber}-results.xlsx`) : null,
+        can('bulk_whatsapp_reminders.export') ? downloadLink(`/bulk-reminders/batches/${batch.id}/export.pdf`, 'Export PDF', `${batch.batchNumber}-report.pdf`) : null
       ),
       stepper(batch.status === 'PROCESSING' || batch.status === 'PAUSED' ? 3 : 4)
     );
@@ -868,16 +1042,14 @@ async function renderDashboard(initial) {
     loadLive().catch(() => {});
     loadFailed().catch(() => {});
   }, 800);
-  const es = new EventSource(`${API}/bulk-reminders/batches/${batch.id}/stream`);
-  es.addEventListener('summary', (e) => {
-    const next = JSON.parse(e.data);
+  const closeStream = openStream(`/bulk-reminders/batches/${batch.id}/stream`, (next) => {
     const statusChanged = next.status !== batch.status;
     batch = next;
     drawSummary();
     if (statusChanged) drawHeader();
     refreshTables();
   });
-  teardown.push(() => es.close());
+  teardown.push(closeStream);
 }
 
 // ------------------------------------------------------------------ history
@@ -930,16 +1102,21 @@ async function renderHistory() {
 async function renderTemplateSettings() {
   setCrumbs('Settings', 'Message Template');
   const data = await api('GET', '/bulk-reminders/message-template');
-  const ta = h('textarea', { spellcheck: 'false' });
+  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'English template' });
   ta.value = data.body;
+  const taTe = h('textarea', { spellcheck: 'false', lang: 'te', 'aria-label': 'Telugu template' });
+  taTe.value = data.bodyTe;
   const msg = h('div');
   mount(
-    h('h1', {}, 'Default WhatsApp Message Template'),
-    h('p', { class: 'sub' }, `Used for new batches. Placeholders: ${data.variables.map((v) => `{{${v}}}`).join(' ')}`),
+    h('h1', {}, 'Default WhatsApp Message Templates'),
+    h('p', { class: 'sub' }, `Used for new batches (English and Telugu). Placeholders: ${data.variables.map((v) => `{{${v}}}`).join(' ')}`),
     h(
       'div',
       { class: 'panel' },
-      ta,
+      h('div', { class: 'two-col' },
+        h('div', {}, h('h3', { class: 'lang-h' }, 'English'), ta, h('button', { class: 'btn secondary small', style: 'margin-top:6px', onclick: () => (ta.value = data.defaultBody) }, 'Reset English to default')),
+        h('div', {}, h('h3', { class: 'lang-h' }, 'Telugu (తెలుగు)'), taTe, h('button', { class: 'btn secondary small', style: 'margin-top:6px', onclick: () => (taTe.value = data.defaultBodyTe) }, 'Reset Telugu to default'))
+      ),
       msg,
       h(
         'div',
@@ -948,15 +1125,14 @@ async function renderTemplateSettings() {
           class: 'btn',
           onclick: async () => {
             try {
-              await api('PUT', '/bulk-reminders/message-template', { body: ta.value });
+              await api('PUT', '/bulk-reminders/message-template', { body: ta.value, bodyTe: taTe.value });
               msg.replaceChildren();
               toast('Template saved');
             } catch (e) {
               msg.replaceChildren(h('div', { class: 'notice bad', style: 'margin-top:10px' }, e.message));
             }
           },
-        }, 'Save Template'),
-        h('button', { class: 'btn secondary', onclick: () => (ta.value = data.defaultBody) }, 'Reset to default'),
+        }, 'Save Templates'),
         h('span', { class: 'muted' }, data.updatedAt ? `Last updated ${time(data.updatedAt)}` : 'Using built-in default')
       )
     )
@@ -1000,8 +1176,15 @@ async function renderAudit() {
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await api('POST', '/auth/logout').catch(() => {});
+  if (NATIVE) store.set('token', null);
   state.user = null;
   location.hash = '#/login';
 });
+// Phone layout: the side menu becomes a slide-over opened from the ☰ button.
+document.getElementById('menu-btn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
+document.getElementById('sidenav').addEventListener('click', (e) => {
+  if (e.target.closest('a')) document.body.classList.remove('nav-open');
+});
+if (NATIVE) document.documentElement.classList.add('native');
 window.addEventListener('hashchange', route);
 route();

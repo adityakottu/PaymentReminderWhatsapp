@@ -86,7 +86,17 @@ class MetaCloudProvider {
     this.fetch = fetchImpl || globalThis.fetch;
   }
 
-  buildPayload({ to, text, variables, idempotencyKey }) {
+  /** Approved template (name, language code, body parameters) for a message language. */
+  templateFor(language) {
+    const c = this.cfg;
+    if (language === 'te') return { name: c.templateNameTe || c.templateName, code: c.templateLanguageTe || 'te', params: c.templateParams };
+    if (language === 'both') {
+      return { name: c.templateNameBoth || c.templateName, code: c.templateLanguageBoth || c.templateLanguage, params: c.templateParamsBoth || c.templateParams };
+    }
+    return { name: c.templateName, code: c.templateLanguage, params: c.templateParams };
+  }
+
+  buildPayload({ to, text, variables, idempotencyKey, language }) {
     const base = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -98,7 +108,8 @@ class MetaCloudProvider {
     if (this.cfg.sendMode === 'text') {
       return { ...base, type: 'text', text: { preview_url: false, body: text } };
     }
-    const parameters = this.cfg.templateParams.map((name) => {
+    const tpl = this.templateFor(language || 'en');
+    const parameters = (tpl.params || []).map((name) => {
       const v = variables && variables[name] !== undefined && variables[name] !== null ? String(variables[name]).trim() : '';
       // Template parameters may not be empty and may not contain newlines/tabs or 4+ consecutive spaces.
       return { type: 'text', text: (v || '-').replace(/[\n\t]+/g, ' ').replace(/ {4,}/g, '   ').slice(0, 1024) };
@@ -107,8 +118,8 @@ class MetaCloudProvider {
       ...base,
       type: 'template',
       template: {
-        name: this.cfg.templateName,
-        language: { code: this.cfg.templateLanguage },
+        name: tpl.name,
+        language: { code: tpl.code },
         components: parameters.length ? [{ type: 'body', parameters }] : [],
       },
     };

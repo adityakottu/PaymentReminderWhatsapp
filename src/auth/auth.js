@@ -66,7 +66,9 @@ function createAuth({ db, config, audit }) {
 
   async function authenticate(req, res, next) {
     try {
-      const token = req.cookies && req.cookies[COOKIE];
+      // Browser: HttpOnly cookie. Mobile app: "Authorization: Bearer <token>".
+      const bearer = bearerToken(req);
+      const token = bearer || (req.cookies && req.cookies[COOKIE]);
       if (!token) throw new HttpError(401, 'Not signed in');
       let payload;
       try {
@@ -96,6 +98,8 @@ function createAuth({ db, config, audit }) {
   // calls must carry a custom header, which cross-site forms cannot send.
   function csrfGuard(req, res, next) {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    // Bearer tokens are never sent automatically by a browser, so they cannot be used for CSRF.
+    if (bearerToken(req)) return next();
     if (req.get('x-requested-with') !== 'fetch') return next(new HttpError(403, 'Missing X-Requested-With header'));
     next();
   }
@@ -117,7 +121,13 @@ function createAuth({ db, config, audit }) {
         throw new HttpError(401, 'Invalid username or password');
       }
       failures.delete(key);
-      const token = jwt.sign({ sub: row.id }, secret, { algorithm: 'HS256', expiresIn: Math.floor(ttlMs / 1000) });
+      const user = await loadUser(db, row.id);
+      // The mobile app cannot use the browser's same-site cookie, so it receives a bearer token instead.
+      const mobile = (req.body || {}).client === 'mobile';
+      const tokenTtlMs = mobile ? config.auth.mobileSessionTtlHours * 3600 * 1000 : ttlMs;
+      const token = jwt.sign({ sub: row.id, ...(mobile ? { cli: 'mobile' } : {}) }, secret, { algorithm: 'HS256', expiresIn: Math.floor(tokenTtlMs / 1000) });
+      await audit.log({ actor: user, action: 'auth.login', description: `${user.username} signed in${mobile ? ' (mobile app)' : ''}`, ctx: requestContext(req) });
+      if (mobile) return res.json({ user: serializeUser(user), token, expiresIn: Math.floor(tokenTtlMs / 1000) });
       res.cookie(COOKIE, token, {
         httpOnly: true,
         sameSite: 'strict',
@@ -125,8 +135,6 @@ function createAuth({ db, config, audit }) {
         maxAge: ttlMs,
         path: '/',
       });
-      const user = await loadUser(db, row.id);
-      await audit.log({ actor: user, action: 'auth.login', description: `${user.username} signed in`, ctx: requestContext(req) });
       res.json({ user: serializeUser(user) });
     } catch (err) {
       next(err);
@@ -188,6 +196,11 @@ function createAuth({ db, config, audit }) {
   });
 
   return { router, usersRouter: users, authenticate, requirePermission, csrfGuard };
+}
+
+function bearerToken(req) {
+  const h = req.get('authorization');
+  return h && /^Bearer\s+\S+$/i.test(h) ? h.replace(/^Bearer\s+/i, '') : null;
 }
 
 function serializeUser(u) {
