@@ -19,6 +19,12 @@ const STATUS_LABEL = {
   CANCELLED: 'Cancelled',
 };
 
+function modeLabel(batch) {
+  if (batch.simulated) return 'TEST MODE – simulated, nothing was sent to WhatsApp';
+  if (batch.whatsappProvider === 'meta_cloud') return 'WhatsApp Business Platform (Meta Cloud API)';
+  return batch.whatsappProvider || '';
+}
+
 const LANGUAGE_LABEL = { en: 'English', te: 'Telugu', both: 'English + Telugu' };
 
 /**
@@ -74,7 +80,7 @@ async function buildResultsWorkbook({ batch, records }) {
       dueDate: safeCell(fmtDate(r.dueDate)),
       accountId: safeCell(r.accountId),
       message: safeCell(r.message),
-      status: STATUS_LABEL[r.status] || r.status,
+      status: (STATUS_LABEL[r.status] || r.status) + (batch.simulated && !['PENDING', 'QUEUED', 'PROCESSING', 'CANCELLED'].includes(r.status) ? ' (simulated)' : ''),
       failureReason: safeCell(r.failureReason),
       providerErrorCode: safeCell(r.providerErrorCode),
       attempts: r.attempts,
@@ -97,6 +103,7 @@ async function buildResultsWorkbook({ batch, records }) {
     ['Uploaded By', batch.uploadedByName || ''],
     ['Upload Date', fmtDateTime(batch.uploadedAt)],
     ['Status', batch.status],
+    ['WhatsApp', modeLabel(batch)],
     ['Total Recipients', batch.recipients],
     ['Successful', batch.successful],
     ['Failed', batch.failed],
@@ -118,6 +125,9 @@ function streamResultsPdf({ batch, records }, out) {
 
   doc.fillColor(green).fontSize(18).font('Helvetica-Bold').text('WhatsApp Payment Reminder Report');
   doc.moveDown(0.2).fillColor('#555').fontSize(9).font('Helvetica').text(`Generated ${fmtDateTime(new Date().toISOString())} IST`);
+  if (batch.simulated) {
+    doc.moveDown(0.4).fillColor('#b3261e').fontSize(11).font('Helvetica-Bold').text('TEST MODE - these messages were simulated. Nothing was sent to WhatsApp.');
+  }
   doc.moveDown(0.8);
 
   const pairs = [
@@ -126,6 +136,7 @@ function streamResultsPdf({ batch, records }, out) {
     ['Upload Date', fmtDateTime(batch.uploadedAt)],
     ['Uploaded By', batch.uploadedByName || '-'],
     ['Status', batch.status.replace(/_/g, ' ')],
+    ['WhatsApp', batch.simulated ? 'TEST MODE (simulated)' : batch.whatsappProvider === 'meta_cloud' ? 'Meta Cloud API' : '-'],
     ['Total Recipients', String(batch.recipients)],
     ['Successful', String(batch.successful)],
     ['Failed', String(batch.failed)],

@@ -93,6 +93,14 @@ class MockProvider {
     if (Math.random() < 0.6) fire('read', 5000 + Math.random() * 8000);
   }
 
+  async checkConnection() {
+    return {
+      checks: [
+        { key: 'test_mode', ok: false, required: true, label: 'WhatsApp connection', detail: 'Test mode (WHATSAPP_PROVIDER=mock): messages are simulated and nobody receives them' },
+      ],
+    };
+  }
+
   sign(rawBody) {
     return `sha256=${crypto.createHmac('sha256', this.webhookSecret).update(rawBody).digest('hex')}`;
   }

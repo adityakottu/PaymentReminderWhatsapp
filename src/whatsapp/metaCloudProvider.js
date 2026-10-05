@@ -172,6 +172,91 @@ class MetaCloudProvider {
     });
   }
 
+  /** GET a Graph API resource with the configured token; throws a readable error. */
+  async _graphGet(pathAndQuery) {
+    const url = `${this.cfg.apiBaseUrl.replace(/\/$/, '')}/${this.cfg.apiVersion}/${pathAndQuery}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.cfg.requestTimeoutMs);
+    let res;
+    try {
+      res = await this.fetch(url, { headers: { Authorization: `Bearer ${this.cfg.apiToken}` }, signal: controller.signal });
+    } catch (err) {
+      throw new Error(err && err.name === 'AbortError' ? 'Meta did not respond in time' : `Cannot reach Meta: ${err && err.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const e = (body && body.error) || {};
+      const { reason } = classifyMetaError({ code: e.code, httpStatus: res.status, message: e.message, details: e.error_data && e.error_data.details });
+      throw new Error(`${reason}${e.code !== undefined ? ` (code ${e.code})` : ''}`);
+    }
+    return body;
+  }
+
+  /**
+   * Check the real WhatsApp connection without sending anything: the access token and
+   * sender number, and that each message template exists and is APPROVED.
+   */
+  async checkConnection() {
+    const c = this.cfg;
+    const checks = [];
+    try {
+      const p = await this._graphGet(`${encodeURIComponent(c.phoneNumberId)}?fields=display_phone_number,verified_name,quality_rating`);
+      checks.push({
+        key: 'phone_number',
+        ok: true,
+        required: true,
+        label: 'Access token and sender phone number',
+        detail: `${p.display_phone_number || '?'} · ${p.verified_name || 'no verified name'}${p.quality_rating ? ` · quality ${p.quality_rating}` : ''}`,
+      });
+    } catch (err) {
+      checks.push({ key: 'phone_number', ok: false, required: true, label: 'Access token and sender phone number', detail: err.message });
+    }
+
+    if (c.sendMode === 'text') {
+      checks.push({ key: 'templates', ok: true, required: false, label: 'Message templates', detail: 'Send mode is "text" – free text only works within 24h of the customer messaging you' });
+      return { checks };
+    }
+    const wanted = [
+      { use: 'English', name: c.templateName, code: c.templateLanguage, required: true },
+      { use: 'Telugu', name: c.templateNameTe || c.templateName, code: c.templateLanguageTe || 'te', required: false },
+      { use: 'English + Telugu', name: c.templateNameBoth || c.templateName, code: c.templateLanguageBoth || c.templateLanguage, required: false },
+    ];
+    if (!c.businessAccountId) {
+      for (const w of wanted) {
+        checks.push({ key: `template_${w.use}`, ok: false, required: w.required, label: `Template for ${w.use}: ${w.name} (${w.code})`, detail: 'Set WHATSAPP_BUSINESS_ACCOUNT_ID to check templates' });
+      }
+      return { checks };
+    }
+    const byName = new Map();
+    for (const name of new Set(wanted.map((w) => w.name))) {
+      try {
+        const res = await this._graphGet(`${encodeURIComponent(c.businessAccountId)}/message_templates?name=${encodeURIComponent(name)}&fields=name,language,status,category&limit=100`);
+        byName.set(name, { list: (res && res.data) || [] });
+      } catch (err) {
+        byName.set(name, { error: err.message });
+      }
+    }
+    for (const w of wanted) {
+      const found = byName.get(w.name);
+      const label = `Template for ${w.use}: ${w.name} (${w.code})`;
+      if (found.error) {
+        checks.push({ key: `template_${w.use}`, ok: false, required: w.required, label, detail: found.error });
+        continue;
+      }
+      const t = found.list.find((x) => x.name === w.name && x.language === w.code);
+      checks.push({
+        key: `template_${w.use}`,
+        ok: !!t && t.status === 'APPROVED',
+        required: w.required,
+        label,
+        detail: t ? `${t.status}${t.category ? ` · ${t.category}` : ''}` : `Not found in WhatsApp Manager${w.required ? '' : ` – only needed to send ${w.use} reminders`}`,
+      });
+    }
+    return { checks };
+  }
+
   verifyWebhookSignature(rawBody, headers) {
     const secret = this.cfg.webhookSecret;
     const header = headers['x-hub-signature-256'];

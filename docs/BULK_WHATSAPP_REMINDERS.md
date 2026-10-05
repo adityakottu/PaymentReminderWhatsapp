@@ -108,6 +108,20 @@ See `.env.example` for the complete list with comments. Key ones:
 
 ## 4. WhatsApp provider configuration (Meta WhatsApp Cloud API)
 
+**Connection modes.** `WHATSAPP_PROVIDER` decides whether messages really go out:
+
+| Value | Mode | What happens |
+| --- | --- | --- |
+| `meta_cloud` (with credentials) | **Live** | Messages are sent through the WhatsApp Cloud API |
+| `mock` | **Test mode** | Nothing is sent. Results are simulated and labelled "(simulated)" on screen, in history and in exports. Refused in production |
+| not set / credentials missing | **Not connected** | The app works, but sending is blocked with a clear message |
+
+A red/orange banner is shown on every page unless the connection is live. A batch remembers the mode it was
+sent in, so a test-mode batch can never be resumed or retried as real messages (and vice versa).
+**Settings → WhatsApp Connection** (admins) shows what is configured (never the secrets), checks the access
+token, sender number and template approval with Meta, shows the webhook URL and last update received, and can
+send one real test message.
+
 1. Create a Meta Business account and a **WhatsApp Business Account (WABA)** in Meta Business Manager; complete **business verification**.
 2. Create a Meta App (type *Business*), add the **WhatsApp** product, register and verify your sending phone number, and set its **display name** (requires approval).
 3. Create a **System User** with a **permanent access token** having `whatsapp_business_messaging` and `whatsapp_business_management` → `WHATSAPP_API_TOKEN`.

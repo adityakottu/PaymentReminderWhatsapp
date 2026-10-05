@@ -13,12 +13,12 @@ const quietLogger = { info() {}, warn() {}, error() {} };
 /**
  * Spin up an isolated app on an in-memory SQLite DB with a scripted mock provider.
  */
-async function setup({ script, queue = {}, reminders = {}, provider, latencyMs = 0 } = {}) {
+async function setup({ script, queue = {}, reminders = {}, provider, latencyMs = 0, whatsapp = {} } = {}) {
   const config = loadConfig({
     env: 'test',
     database: { client: 'better-sqlite3', sqliteFilename: ':memory:' },
     auth: { jwtSecret: 'test-secret-test-secret-test-secret', cookieSecure: false },
-    whatsapp: { provider: 'mock', webhookSecret: 'whsec_test', webhookVerifyToken: 'verify-me' },
+    whatsapp: { provider: 'mock', webhookSecret: 'whsec_test', webhookVerifyToken: 'verify-me', ...whatsapp },
     queue: { maxRetries: 3, retryBaseDelayMs: 5, retryMaxDelayMs: 20, concurrency: 5, pollIntervalMs: 5, leaseMs: 60000, sendRatePerSecond: 0, reconcileWindowMs: 60000, runInProcess: false, ...queue },
     reminders: { duplicateWindowHours: 24, ...reminders },
     audit: { captureIp: true },

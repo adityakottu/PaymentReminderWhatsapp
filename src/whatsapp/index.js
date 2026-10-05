@@ -2,6 +2,30 @@
 
 const { MetaCloudProvider } = require('./metaCloudProvider');
 const { MockProvider } = require('./mockProvider');
+const { ERROR_KIND, ProviderSendError } = require('./provider');
+
+/** Used when no WhatsApp provider is configured: nothing can be sent. */
+class NotConfiguredProvider {
+  constructor() {
+    this.name = 'none';
+  }
+
+  async sendMessage() {
+    throw new ProviderSendError({ kind: ERROR_KIND.PERMANENT, code: 'NOT_CONNECTED', message: 'WhatsApp is not connected on the server' });
+  }
+
+  verifyWebhookSignature() {
+    return false;
+  }
+
+  handleVerificationChallenge() {
+    return null;
+  }
+
+  parseWebhook() {
+    return { statuses: [], optOuts: [] };
+  }
+}
 
 /**
  * WhatsApp service factory. Application code depends only on the provider
@@ -19,9 +43,14 @@ function createProvider(whatsappConfig) {
         simulateStatusCallbacks: whatsappConfig.mockSimulateStatusCallbacks,
         latencyMs: 150,
       });
+    case 'none':
+    case '':
+    case null:
+    case undefined:
+      return new NotConfiguredProvider();
     default:
-      throw new Error(`Unknown WHATSAPP_PROVIDER "${whatsappConfig.provider}"`);
+      throw new Error(`Unknown WHATSAPP_PROVIDER "${whatsappConfig.provider}" (use meta_cloud, or mock for test mode)`);
   }
 }
 
-module.exports = { createProvider };
+module.exports = { createProvider, NotConfiguredProvider };

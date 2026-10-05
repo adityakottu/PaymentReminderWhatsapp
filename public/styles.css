@@ -152,3 +152,24 @@ main { padding-bottom: max(60px, env(safe-area-inset-bottom)); }
   dialog { max-width: calc(100vw - 24px); }
 }
 html.native { -webkit-tap-highlight-color: transparent; }
+
+/* ---------- WhatsApp connection ---------- */
+.wa-banner { padding: 9px 20px; font-size: 13px; border-bottom: 1px solid var(--line); }
+.wa-banner.test { background: var(--warn-bg); color: var(--warn); }
+.wa-banner.off { background: var(--bad-bg); color: var(--bad); }
+.wa-banner a { color: inherit; font-weight: 600; margin-left: 6px; }
+.status-pill { display: inline-block; padding: 4px 12px; border-radius: 999px; font-weight: 700; }
+.status-pill.live { background: var(--ok-bg); color: var(--ok); }
+.status-pill.test { background: var(--warn-bg); color: var(--warn); }
+.status-pill.not_configured { background: var(--bad-bg); color: var(--bad); }
+.kv { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 6px 16px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; word-break: break-all; }
+.checks { list-style: none; padding: 0; margin: 10px 0 0; }
+.checks li { padding: 8px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+.checks .icon { width: 22px; flex-shrink: 0; font-weight: 700; }
+.checks .ok .icon { color: var(--ok); }
+.checks .bad .icon { color: var(--bad); }
+.checks .optional .icon { color: var(--warn); }
+ol.steps-list li { margin-bottom: 6px; }
+@media (max-width: 900px) { .wa-banner { padding: 8px 14px; } .kv { grid-template-columns: 1fr; gap: 2px; } .kv dd { margin-bottom: 8px; } }

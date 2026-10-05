@@ -79,7 +79,14 @@ function failureStatusFor(kind, exhausted) {
   }
 }
 
-function createBulkService({ db, config, audit, logger = console, clock = () => Date.now() }) {
+function createBulkService({ db, config, audit, logger = console, clock = () => Date.now(), whatsappStatus = () => ({ mode: 'test', provider: 'mock', canSend: true }) }) {
+  /** Block sending when WhatsApp is not connected (instead of failing every record). */
+  function assertWhatsappConnected() {
+    const st = whatsappStatus();
+    if (!st.canSend) throw new HttpError(409, st.message, { whatsapp: st });
+    return st;
+  }
+
   const reminderType = config.reminders.reminderType;
   const now = () => nowIso(clock);
 
@@ -493,6 +500,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       recentlyReminded: await duplicateCheck(batch),
       duplicateWindowHours: config.reminders.duplicateWindowHours,
       canOverrideDuplicates: user.permissions.has(PERMISSIONS.OVERRIDE_DUPLICATES),
+      whatsapp: whatsappStatus(),
     };
   }
 
@@ -503,6 +511,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
     if (overrideDuplicates && !user.permissions.has(PERMISSIONS.OVERRIDE_DUPLICATES)) {
       throw new HttpError(403, 'You are not allowed to override duplicate-send protection');
     }
+    const wa = assertWhatsappConnected();
     const { templates, language } = await batchTemplates(batch);
     const v = validateTemplates(templates, templateLanguagesFor(await languagesInBatch(batch, language)));
     if (!v.ok) throw new HttpError(400, `Message template is invalid: ${v.errors.join('; ')}`);
@@ -516,6 +525,7 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
     await db.transaction(async (trx) => {
       const ok = await trx('bulk_upload_batches').where({ id: batch.id, status: B.READY }).update({
         status: B.PROCESSING,
+        whatsapp_provider: wa.provider,
         message_template: templates.en,
         message_template_te: templates.te,
         language,
@@ -565,6 +575,12 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
 
   async function resumeBatch(user, batchId, ctx) {
     const batch = await getOperableBatch(user, batchId);
+    if (batch.status === B.PAUSED) {
+      const wa = assertWhatsappConnected();
+      if (batch.whatsapp_provider && batch.whatsapp_provider !== wa.provider) {
+        throw new HttpError(409, `This batch was started ${batch.whatsapp_provider === 'mock' ? 'in test mode' : `with ${batch.whatsapp_provider}`} and cannot continue with a different WhatsApp connection. Cancel it and upload the file again.`);
+      }
+    }
     const ok = await db('bulk_upload_batches').where({ id: batch.id, status: B.PAUSED }).update({ status: B.PROCESSING, paused_at: null, updated_at: now() });
     if (!ok) throw new HttpError(409, `Batch is ${batch.status}; only paused batches can be resumed`);
     await audit.log({ actor: user, action: 'bulk.resumed', description: `${user.username} resumed ${batch.batch_number}`, batchId: batch.id, ctx });
@@ -600,6 +616,10 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
     const batch = await getOperableBatch(user, batchId);
     if ([B.CANCELLED, B.VALIDATED, B.READY, B.UPLOADED, B.VALIDATING].includes(batch.status)) {
       throw new HttpError(409, `Batch is ${batch.status}; failed messages cannot be retried`);
+    }
+    const wa = assertWhatsappConnected();
+    if (batch.whatsapp_provider && batch.whatsapp_provider !== wa.provider) {
+      throw new HttpError(409, `This batch was sent ${batch.whatsapp_provider === 'mock' ? 'in test mode' : `with ${batch.whatsapp_provider}`}; retrying it with a different WhatsApp connection is not allowed. Upload the file again as a new batch.`);
     }
     let count = 0;
     await db.transaction(async (trx) => {
@@ -701,6 +721,9 @@ function createBulkService({ db, config, audit, logger = console, clock = () => 
       messageTemplateTe: b.message_template_te,
       language: b.language || 'en',
       overrideDuplicates: !!b.override_duplicates,
+      whatsappProvider: b.whatsapp_provider || null,
+      // Sent with the mock provider: nothing reached WhatsApp.
+      simulated: b.whatsapp_provider === 'mock',
       updatedAt: toIso(b.updated_at),
       ...extra,
     };

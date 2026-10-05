@@ -15,7 +15,11 @@ async function main() {
 
   const db = createDb(config);
   await migrate(db);
-  const { app, worker } = createApplication({ db, config });
+  const { app, worker, whatsappStatus } = createApplication({ db, config });
+  const wa = whatsappStatus();
+  const banner = { live: '[whatsapp] LIVE', test: '[whatsapp] TEST MODE', not_configured: '[whatsapp] NOT CONNECTED' }[wa.mode];
+  (wa.mode === 'live' ? console.info : console.warn)(`${banner} – ${wa.message}`);
+  for (const w of wa.warnings) console.warn(`[whatsapp] ${w}`);
 
   const server = app.listen(config.port, () => console.info(`[http] listening on :${config.port}`));
   if (config.queue.runInProcess) worker.start();

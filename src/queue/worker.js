@@ -120,9 +120,11 @@ class MessageWorker {
   }
 
   async _hasWaitingJobs() {
+    if (this.provider.name === 'none') return false;
     const row = await this.db('bulk_reminder_records as r')
       .join('bulk_upload_batches as b', 'b.id', 'r.batch_id')
       .where('b.status', B.PROCESSING)
+      .where((w) => w.where('b.whatsapp_provider', this.provider.name).orWhereNull('b.whatsapp_provider'))
       .whereIn('r.status', CLAIMABLE_STATUSES)
       .first('r.id');
     return !!row;
@@ -130,6 +132,8 @@ class MessageWorker {
 
   /** Atomically claim up to `limit` due jobs from batches that are PROCESSING. */
   async claim(limit) {
+    // No WhatsApp connection: leave every job queued until one is configured.
+    if (this.provider.name === 'none') return [];
     const token = crypto.randomBytes(12).toString('hex');
     const ts = this.now();
     const leaseUntil = new Date(this.clock() + this.q.leaseMs).toISOString();
@@ -138,6 +142,9 @@ class MessageWorker {
       const q = trx('bulk_reminder_records as r')
         .join('bulk_upload_batches as b', 'b.id', 'r.batch_id')
         .where('b.status', B.PROCESSING)
+        // Only batches started with this connection: a test-mode batch must never be sent for
+        // real after WhatsApp is connected (and vice versa).
+        .where((w) => w.where('b.whatsapp_provider', this.provider.name).orWhereNull('b.whatsapp_provider'))
         .whereIn('r.status', CLAIMABLE_STATUSES)
         .where('r.next_attempt_at', '<=', ts)
         .orderBy('r.next_attempt_at')

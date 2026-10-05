@@ -282,7 +282,7 @@ test('exports: Excel neutralises formula injection; PDF is generated', async () 
     assert.equal(typeof name, 'string');
     assert.ok(name.startsWith("'="), 'formula neutralised');
     assert.ok(String(ws.getRow(3).getCell(5).value).startsWith("'+"));
-    assert.equal(ws.getRow(2).getCell(7).value, 'Sent');
+    assert.equal(ws.getRow(2).getCell(7).value, 'Sent (simulated)', 'test-mode batches are labelled simulated');
 
     const p = await admin.get(`/api/bulk-reminders/batches/${id}/export.pdf`);
     assert.equal(p.status, 200);

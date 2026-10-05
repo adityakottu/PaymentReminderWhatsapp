@@ -55,7 +55,9 @@ function loadConfig(overrides = {}) {
     },
 
     whatsapp: {
-      provider: str('WHATSAPP_PROVIDER', 'mock'),
+      // meta_cloud = real WhatsApp (Meta Cloud API). mock = TEST MODE, nothing is sent.
+      // Unset = not connected: the app works but sending is blocked.
+      provider: str('WHATSAPP_PROVIDER', 'none'),
       apiToken: str('WHATSAPP_API_TOKEN', null),
       phoneNumberId: str('WHATSAPP_PHONE_NUMBER_ID', null),
       businessAccountId: str('WHATSAPP_BUSINESS_ACCOUNT_ID', null),

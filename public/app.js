@@ -231,9 +231,34 @@ const STATUS = {
   INVALID: ['Invalid', 'bad'],
   DUPLICATE: ['Duplicate', 'warn'],
 };
-function badge(status) {
+const PROVIDER_OUTCOMES = ['SENT', 'DELIVERED', 'READ', 'FAILED', 'INVALID_NUMBER', 'NOT_ON_WHATSAPP', 'RATE_LIMITED', 'PROVIDER_ERROR', 'RETRY_SCHEDULED'];
+function badge(status, simulated) {
   const [label, cls] = STATUS[status] || [status, ''];
+  // In test mode no outcome is real – neither "Sent/Delivered/Read" nor the mock's failures.
+  if (simulated && PROVIDER_OUTCOMES.includes(status)) return h('span', { class: 'badge warn', title: 'Test mode – nothing was sent to WhatsApp' }, `${label} (simulated)`);
   return h('span', { class: `badge ${cls}` }, label);
+}
+
+const waMode = () => (state.config && state.config.whatsapp ? state.config.whatsapp.mode : null);
+
+/** Banner shown on every page while WhatsApp is not really connected. */
+function renderWhatsappBanner() {
+  const el = document.getElementById('wa-banner');
+  const wa = state.user && state.config && state.config.whatsapp;
+  if (!wa || wa.mode === 'live') {
+    el.hidden = true;
+    return;
+  }
+  const settingsLink = can('whatsapp_settings.manage') ? h('a', { href: '#/whatsapp' }, 'Set up WhatsApp →') : h('span', {}, 'Ask your administrator to connect WhatsApp.');
+  el.className = `wa-banner ${wa.mode === 'test' ? 'test' : 'off'}`;
+  el.replaceChildren(
+    h('strong', {}, wa.mode === 'test' ? 'TEST MODE' : 'WhatsApp not connected'),
+    ' ',
+    h('span', {}, wa.mode === 'test' ? 'Messages are simulated – nobody receives them, and "Sent/Delivered/Read" are not real.' : 'Reminders cannot be sent until WhatsApp is connected on the server.'),
+    ' ',
+    settingsLink
+  );
+  el.hidden = false;
 }
 
 function card(k, v, cls) {
@@ -330,11 +355,13 @@ async function route() {
     if (parts[0] === 'login') return renderLogin();
     if (!can('bulk_whatsapp_reminders')) return mount(h('div', { class: 'panel' }, h('h1', {}, 'No access'), h('p', {}, 'Your account does not have the Bulk WhatsApp Reminders permission.')));
     if (!state.config) state.config = await api('GET', '/bulk-reminders/config');
+    renderWhatsappBanner();
     if (parts[0] === 'bulk' && parts[1]) return await renderBatch(Number(parts[1]));
     if (parts[0] === 'bulk') return renderUpload();
     if (parts[0] === 'history') return await renderHistory();
     if (parts[0] === 'template') return await renderTemplateSettings();
     if (parts[0] === 'audit') return await renderAudit();
+    if (parts[0] === 'whatsapp') return await renderWhatsappSettings();
     location.hash = '#/bulk';
   } catch (err) {
     mount(h('div', { class: 'notice bad' }, err.message));
@@ -344,6 +371,7 @@ async function route() {
 function renderChrome() {
   const logged = !!state.user;
   document.body.classList.remove('nav-open');
+  renderWhatsappBanner();
   document.getElementById('menu-btn').hidden = !logged;
   document.getElementById('sidenav').hidden = !logged;
   document.getElementById('user-box').hidden = !logged;
@@ -714,15 +742,17 @@ async function renderReview(batch) {
 
   const override = readiness.recentlyReminded && readiness.canOverrideDuplicates ? h('input', { type: 'checkbox', id: 'override' }) : null;
   const canSend = can('bulk_whatsapp_reminders.send');
+  const wa = readiness.whatsapp || { mode: 'live', canSend: true };
+  const testMode = wa.mode === 'test';
   const sendBtn = h('button', {
     class: 'btn',
-    disabled: !canSend || !readiness.recipients,
+    disabled: !canSend || !readiness.recipients || !wa.canSend,
     onclick: async () => {
       if (saveBtn && !saveBtn.disabled) return toast('Save the edited message first.', true);
       const ok = await confirmDialog({
-        title: 'Send WhatsApp reminders?',
-        body: `You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}) in ${LANG_LABEL[language]}. Customers with their own Language value in the Excel get that language. This cannot be undone.`,
-        confirmLabel: `Send ${num(readiness.recipients)} Reminders`,
+        title: testMode ? 'TEST MODE – simulate sending?' : 'Send WhatsApp reminders?',
+        body: `${testMode ? 'WhatsApp is NOT connected: this is a simulation and NO real messages will be sent. ' : ''}You are about to send ${num(readiness.recipients)} WhatsApp payment reminders (batch ${readiness.batchNumber}) in ${LANG_LABEL[language]}. Customers with their own Language value in the Excel get that language. This cannot be undone.`,
+        confirmLabel: testMode ? `Simulate ${num(readiness.recipients)} Reminders` : `Send ${num(readiness.recipients)} Reminders`,
         requireCheck: 'I confirm these customers should receive this reminder.',
       });
       if (!ok) return;
@@ -734,7 +764,7 @@ async function renderReview(batch) {
         toast(e.message, true);
       }
     },
-  }, `Send ${num(readiness.recipients)} WhatsApp Reminders`);
+  }, testMode ? `Simulate ${num(readiness.recipients)} Reminders (test mode)` : `Send ${num(readiness.recipients)} WhatsApp Reminders`);
 
   mount(
     h('h1', {}, 'Review & Send'),
@@ -765,6 +795,8 @@ async function renderReview(batch) {
             override ? h('label', {}, override, ' Override and send to them anyway') : null
           )
         : null,
+      !wa.canSend ? h('div', { class: 'notice bad' }, wa.message, can('whatsapp_settings.manage') ? [' ', h('a', { href: '#/whatsapp' }, 'Open WhatsApp Connection')] : null) : null,
+      testMode ? h('div', { class: 'notice warn' }, wa.message) : null,
       canSend ? sendBtn : h('div', { class: 'notice info' }, 'You do not have permission to send reminders.'),
       ' ',
       can('bulk_whatsapp_reminders.upload')
@@ -852,7 +884,8 @@ async function renderDashboard(initial) {
         h('div', { class: 'row', style: 'margin-bottom:6px' }, h('strong', {}, 'Progress'), h('span', { class: 'spacer' }), h('strong', {}, `${batch.progressPct}%`)),
         h('div', { class: 'progress big', role: 'progressbar', 'aria-valuenow': batch.progressPct, 'aria-valuemin': 0, 'aria-valuemax': 100 }, h('div', { style: `width:${batch.progressPct}%` })),
         batch.status === 'PAUSED' ? h('div', { class: 'notice warn', style: 'margin-top:10px' }, 'Paused – no new messages are being sent. Messages already in flight finish normally.') : null,
-        batch.scoped ? h('div', { class: 'notice info', style: 'margin-top:10px' }, 'Showing only customers assigned to you.') : null
+        batch.scoped ? h('div', { class: 'notice info', style: 'margin-top:10px' }, 'Showing only customers assigned to you.') : null,
+        batch.simulated ? h('div', { class: 'notice bad', style: 'margin-top:10px' }, h('strong', {}, 'Test mode batch. '), 'WhatsApp was not connected when this batch ran: these messages were simulated and no customer received them.') : null
       ),
       h(
         'div',
@@ -941,7 +974,7 @@ async function renderDashboard(initial) {
                     h('td', {}, r.customerName, r.accountId ? h('div', { class: 'muted' }, r.accountId) : null),
                     h('td', { class: 'mono' }, r.phoneNumber),
                     h('td', { class: 'num' }, inr(r.amountDue)),
-                    h('td', {}, badge(r.status)),
+                    h('td', {}, badge(r.status, batch.simulated)),
                     h('td', { class: 'num' }, r.attempts),
                     h('td', {}, r.attempts || r.status !== 'PENDING' ? time(r.updatedAt) : '—'),
                     h('td', { class: 'muted' }, r.status === 'RETRY_SCHEDULED' && r.nextAttemptAt ? `Next try ${time(r.nextAttemptAt)}` : r.failureReason || '')
@@ -1007,7 +1040,7 @@ async function renderDashboard(initial) {
                     h('td', {}, r.customerName),
                     h('td', { class: 'mono' }, r.phoneNumber),
                     h('td', { class: 'num' }, inr(r.amountDue)),
-                    h('td', {}, badge(r.status)),
+                    h('td', {}, badge(r.status, batch.simulated)),
                     h('td', {}, r.failureReason || '—'),
                     h('td', { class: 'mono' }, r.providerErrorCode || '—'),
                     h('td', { class: 'num' }, r.attempts),
@@ -1083,7 +1116,7 @@ async function renderHistory() {
                     h('td', { class: 'num' }, num(b.recipients || b.validRecords)),
                     h('td', { class: 'num' }, num(b.successful)),
                     h('td', { class: 'num' }, num(b.failed)),
-                    h('td', {}, badge(b.status))
+                    h('td', {}, badge(b.status), b.simulated ? [' ', h('span', { class: 'badge warn', title: 'Sent in test mode – nothing reached WhatsApp' }, 'Test')] : null)
                   )
                 )
               : h('tr', {}, h('td', { colspan: 8, class: 'empty' }, 'No batches yet'))
@@ -1139,6 +1172,137 @@ async function renderTemplateSettings() {
   );
 }
 
+// ------------------------------------------------------- WhatsApp connection
+
+async function renderWhatsappSettings() {
+  setCrumbs('Settings', 'WhatsApp Connection');
+  const data = await api('GET', '/bulk-reminders/whatsapp');
+  const st = data.status;
+  const set = data.settings;
+  const yes = (v) => (v ? h('span', { class: 'badge ok' }, '✓ set') : h('span', { class: 'badge bad' }, '✗ missing'));
+  const modeText = { live: 'Connected (live)', test: 'Test mode – not connected', not_configured: 'Not connected' }[st.mode];
+
+  const checkBox = h('div');
+  const checkBtn = h('button', {
+    class: 'btn',
+    onclick: async () => {
+      checkBtn.disabled = true;
+      checkBox.replaceChildren(h('p', { class: 'muted' }, 'Checking with WhatsApp…'));
+      try {
+        const r = await api('POST', '/bulk-reminders/whatsapp/check');
+        checkBox.replaceChildren(
+          h('div', { class: `notice ${r.ok ? 'info' : 'bad'}` }, r.ok ? 'Everything required for sending is working.' : 'Problems found – see below.'),
+          h(
+            'ul',
+            { class: 'checks' },
+            r.checks.map((c) => {
+              const cls = c.ok ? 'ok' : c.required ? 'bad' : 'optional';
+              return h('li', { class: cls }, h('span', { class: 'icon' }, c.ok ? '✓' : c.required ? '✗' : '!'), h('div', {}, h('div', {}, h('strong', {}, c.label), c.required ? null : h('span', { class: 'muted' }, ' (optional)')), h('div', { class: 'muted' }, c.detail)));
+            })
+          )
+        );
+      } catch (e) {
+        checkBox.replaceChildren(h('div', { class: 'notice bad' }, e.message));
+      } finally {
+        checkBtn.disabled = false;
+      }
+    },
+  }, 'Check connection');
+
+  const phone = h('input', { type: 'text', placeholder: '98765 43210', inputmode: 'tel', 'aria-label': 'Phone number for the test message' });
+  const lang = h('select', { 'aria-label': 'Language' }, Object.entries(LANG_LABEL).map(([v, l]) => h('option', { value: v }, l)));
+  const testResult = h('div');
+  const testBtn = h('button', {
+    class: 'btn secondary',
+    disabled: !st.canSend,
+    onclick: async () => {
+      if (!phone.value.trim()) return toast('Enter a phone number', true);
+      const ok = await confirmDialog({
+        title: st.mode === 'test' ? 'Simulate a test message?' : 'Send a real test message?',
+        body: st.mode === 'test' ? 'Test mode: nothing will be sent.' : `A real WhatsApp payment-reminder template message (₹1, account TEST-0001) will be sent to ${phone.value}. Only send to a number that agreed to receive it, e.g. your own.`,
+        confirmLabel: 'Send test',
+      });
+      if (!ok) return;
+      testBtn.disabled = true;
+      try {
+        const r = await api('POST', '/bulk-reminders/whatsapp/test-message', { phoneNumber: phone.value, language: lang.value });
+        testResult.replaceChildren(
+          r.ok
+            ? h('div', { class: `notice ${r.simulated ? 'warn' : 'info'}` }, r.simulated ? 'Simulated only (test mode) – nothing was sent.' : `Accepted by WhatsApp for ${r.to} (message id ${r.providerMessageId}). Check the phone; delivery updates arrive through the webhook.`)
+            : h('div', { class: 'notice bad' }, `WhatsApp rejected the message: ${r.error}${r.errorCode ? ` (code ${r.errorCode})` : ''}`)
+        );
+      } catch (e) {
+        testResult.replaceChildren(h('div', { class: 'notice bad' }, e.message));
+      } finally {
+        testBtn.disabled = !st.canSend;
+      }
+    },
+  }, 'Send test message');
+
+  mount(
+    h('h1', {}, 'WhatsApp Connection'),
+    h('p', { class: 'sub' }, 'Reminders are sent through the official WhatsApp Business Platform (Meta Cloud API). Credentials are kept on the server, never in this page.'),
+    h(
+      'div',
+      { class: 'panel' },
+      h('div', { class: 'row' }, h('span', { class: `status-pill ${st.mode}` }, modeText), h('span', {}, st.message)),
+      st.missing.length && st.mode !== 'test' ? h('div', { class: 'notice bad', style: 'margin-top:12px' }, `Missing on the server: ${st.missing.join(', ')}`) : null,
+      st.warnings.length ? h('ul', { class: 'errors' }, st.warnings.map((w) => h('li', {}, w))) : null
+    ),
+    h(
+      'div',
+      { class: 'two-col' },
+      h(
+        'div',
+        { class: 'panel' },
+        h('h2', { style: 'margin-top:0' }, 'Server settings'),
+        h(
+          'dl',
+          { class: 'kv' },
+          h('dt', {}, 'Provider (WHATSAPP_PROVIDER)'), h('dd', {}, set.provider === 'none' ? h('span', { class: 'badge bad' }, 'not set') : set.provider === 'mock' ? h('span', { class: 'badge warn' }, 'mock (test mode)') : set.provider),
+          h('dt', {}, 'Access token'), h('dd', {}, yes(set.accessTokenSet)),
+          h('dt', {}, 'Phone number ID'), h('dd', { class: 'mono' }, set.phoneNumberId || h('span', { class: 'badge bad' }, '✗ missing')),
+          h('dt', {}, 'Business account ID'), h('dd', { class: 'mono' }, set.businessAccountId || h('span', { class: 'badge bad' }, '✗ missing')),
+          h('dt', {}, 'App secret (webhook)'), h('dd', {}, yes(set.webhookSecretSet)),
+          h('dt', {}, 'Webhook verify token'), h('dd', {}, yes(set.webhookVerifyTokenSet)),
+          h('dt', {}, 'Send mode'), h('dd', {}, set.sendMode),
+          ...set.templates.flatMap((t) => [h('dt', {}, `Template – ${t.use}`), h('dd', { class: 'mono' }, `${t.name} (${t.language})`)])
+        )
+      ),
+      h(
+        'div',
+        { class: 'panel' },
+        h('h2', { style: 'margin-top:0' }, 'Webhook (delivery updates)'),
+        h('p', { class: 'muted' }, 'In Meta → your app → WhatsApp → Configuration, set the callback URL below, the same verify token as WHATSAPP_WEBHOOK_VERIFY_TOKEN, and subscribe to "messages".'),
+        h('dl', { class: 'kv' },
+          h('dt', {}, 'Callback URL'), h('dd', { class: 'mono' }, data.webhook.callbackUrl),
+          h('dt', {}, 'Last update received'), h('dd', {}, data.webhook.lastEventAt ? time(data.webhook.lastEventAt) : 'never'),
+          h('dt', {}, 'Last rejected (bad signature)'), h('dd', {}, data.webhook.lastRejectedAt ? time(data.webhook.lastRejectedAt) : 'never')
+        ),
+        data.webhook.callbackUrl.startsWith('http://') ? h('div', { class: 'notice warn', style: 'margin-top:10px' }, 'Meta only accepts https:// callback URLs – deploy the server with HTTPS.') : null
+      )
+    ),
+    h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h2', { style: 'margin:0' }, 'Check connection'), h('span', { class: 'spacer' }), checkBtn), h('p', { class: 'muted' }, 'Verifies the access token and sender number with Meta and that each message template is approved. Sends nothing.'), checkBox),
+    h('div', { class: 'panel' }, h('h2', { style: 'margin-top:0' }, 'Send a test message'), h('p', { class: 'muted' }, 'Sends one payment-reminder template message to a single number so you can see it arrive.'), h('div', { class: 'row' }, phone, lang, testBtn), testResult),
+    h(
+      'div',
+      { class: 'panel' },
+      h('h2', { style: 'margin-top:0' }, 'How to connect WhatsApp'),
+      h(
+        'ol',
+        { class: 'steps-list' },
+        h('li', {}, 'In Meta Business Manager, create a WhatsApp Business Account and complete business verification.'),
+        h('li', {}, 'In developers.facebook.com create a Business app, add WhatsApp, and register your sending phone number.'),
+        h('li', {}, 'Create a System User with a permanent token (whatsapp_business_messaging, whatsapp_business_management).'),
+        h('li', {}, 'In WhatsApp Manager create the "payment_reminder" Utility template (English, and a Telugu translation if needed) and wait for approval.'),
+        h('li', {}, 'On the server set: WHATSAPP_PROVIDER=meta_cloud, WHATSAPP_API_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, WHATSAPP_WEBHOOK_SECRET (App Secret), WHATSAPP_WEBHOOK_VERIFY_TOKEN – then restart.'),
+        h('li', {}, 'Configure the webhook above, then use "Check connection" and "Send a test message".')
+      ),
+      h('p', { class: 'muted' }, 'Full guide: docs/BULK_WHATSAPP_REMINDERS.md, section 4.')
+    )
+  );
+}
+
 // ---------------------------------------------------------------- audit log
 
 async function renderAudit() {
@@ -1146,7 +1310,7 @@ async function renderAudit() {
   const box = h('div');
   let page = 1;
   let action = '';
-  const sel = h('select', {}, [['', 'All actions'], ['bulk.', 'Batch actions'], ['message.', 'Message events'], ['auth.', 'Sign-in'], ['template.', 'Template'], ['optout.', 'Opt-outs'], ['webhook.', 'Webhooks']].map(([v, l]) => h('option', { value: v }, l)));
+  const sel = h('select', {}, [['', 'All actions'], ['bulk.', 'Batch actions'], ['message.', 'Message events'], ['auth.', 'Sign-in'], ['template.', 'Template'], ['optout.', 'Opt-outs'], ['whatsapp.', 'WhatsApp connection'], ['webhook.', 'Webhooks']].map(([v, l]) => h('option', { value: v }, l)));
   sel.addEventListener('change', () => {
     action = sel.value;
     page = 1;

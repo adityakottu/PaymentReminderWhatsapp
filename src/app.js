@@ -10,6 +10,7 @@ const { createBulkRouter, createAuditRouter } = require('./bulk/routes');
 const { createWebhookRouter } = require('./bulk/webhookRoutes');
 const { createProvider } = require('./whatsapp');
 const { MessageWorker } = require('./queue/worker');
+const { connectionStatus } = require('./whatsapp/status');
 
 /**
  * Build the application (HTTP app + services + worker) around a database.
@@ -17,8 +18,9 @@ const { MessageWorker } = require('./queue/worker');
  */
 function createApplication({ db, config, provider, logger = console, clock }) {
   const audit = createAudit(db, { captureIp: config.audit.captureIp, logger });
-  const service = createBulkService({ db, config, audit, logger, clock });
   const whatsapp = provider || createProvider(config.whatsapp);
+  const whatsappStatus = () => connectionStatus(config.whatsapp, whatsapp.name);
+  const service = createBulkService({ db, config, audit, logger, clock, whatsappStatus });
   const auth = createAuth({ db, config, audit });
   const worker = new MessageWorker({ db, provider: whatsapp, service, config, audit, logger, clock });
 
@@ -47,7 +49,7 @@ function createApplication({ db, config, provider, logger = console, clock }) {
   app.get('/healthz', async (req, res) => {
     try {
       await db.raw('select 1');
-      res.json({ ok: true, provider: whatsapp.name, workerRunning: worker.running });
+      res.json({ ok: true, provider: whatsapp.name, whatsapp: whatsappStatus().mode, workerRunning: worker.running });
     } catch (e) {
       res.status(503).json({ ok: false });
     }
@@ -74,7 +76,7 @@ function createApplication({ db, config, provider, logger = console, clock }) {
   app.use('/api', auth.csrfGuard);
   app.use('/api/auth', auth.router);
   app.use('/api/users', auth.usersRouter);
-  app.use('/api/bulk-reminders', createBulkRouter({ service, auth, config, audit }));
+  app.use('/api/bulk-reminders', createBulkRouter({ service, auth, config, audit, whatsapp, whatsappStatus, db }));
   app.use('/api/audit-logs', createAuditRouter({ service, auth }));
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -88,7 +90,7 @@ function createApplication({ db, config, provider, logger = console, clock }) {
     res.status(status).json({ error: status >= 500 ? 'Internal server error' : err.message, details: status < 500 ? err.details : undefined });
   });
 
-  return { app, service, worker, provider: whatsapp, audit, auth };
+  return { app, service, worker, provider: whatsapp, audit, auth, whatsappStatus };
 }
 
 module.exports = { createApplication };

@@ -8,7 +8,7 @@ const { requestContext } = require('../audit/audit');
 const { buildTemplateWorkbook } = require('./excel');
 const { buildResultsWorkbook, streamResultsPdf } = require('./export');
 const { normalizePhone } = require('./phone');
-const { DEFAULT_TEMPLATE, DEFAULT_TEMPLATE_TE, VARIABLES, LANGUAGES } = require('./template');
+const { DEFAULT_TEMPLATE, DEFAULT_TEMPLATE_TE, VARIABLES, LANGUAGES, renderLocalized } = require('./template');
 
 const str = (v) => (typeof v === 'string' ? v : undefined);
 
@@ -20,7 +20,7 @@ function pageParams(req, maxSize = 200) {
   return { page, pageSize };
 }
 
-function createBulkRouter({ service, auth, config, audit }) {
+function createBulkRouter({ service, auth, config, audit, whatsapp, whatsappStatus, db }) {
   const { authenticate, requirePermission } = auth;
   const r = express.Router();
   const json = express.json({ limit: '64kb' });
@@ -51,7 +51,8 @@ function createBulkRouter({ service, auth, config, audit }) {
       maxRows: config.upload.maxRows,
       duplicateWindowHours: config.reminders.duplicateWindowHours,
       maxRetries: config.queue.maxRetries,
-      provider: config.whatsapp.provider,
+      provider: whatsapp ? whatsapp.name : config.whatsapp.provider,
+      whatsapp: whatsappStatus ? whatsappStatus() : null,
       sendMode: config.whatsapp.sendMode,
       templateVariables: VARIABLES,
       languages: LANGUAGES,
@@ -225,6 +226,88 @@ function createBulkRouter({ service, auth, config, audit }) {
     wrap(async (req, res) => {
       const b = req.body || {};
       res.json(await service.updateGlobalTemplate(req.user, { body: str(b.body), bodyTe: str(b.bodyTe) }, requestContext(req)));
+    })
+  );
+
+  // ---- WhatsApp connection (admin). Credentials stay in server env vars; nothing secret is returned.
+  r.get(
+    '/whatsapp',
+    requirePermission(P.MANAGE_SETTINGS),
+    wrap(async (req, res) => {
+      const st = whatsappStatus();
+      const c = config.whatsapp;
+      const lastEvent = await db('webhook_events').max('created_at as m').first();
+      const lastRejected = await db('audit_logs').where({ action: 'webhook.rejected' }).max('created_at as m').first();
+      res.json({
+        status: st,
+        settings: {
+          provider: whatsapp.name,
+          phoneNumberId: c.phoneNumberId || null,
+          businessAccountId: c.businessAccountId || null,
+          apiVersion: c.apiVersion,
+          sendMode: c.sendMode,
+          accessTokenSet: !!c.apiToken,
+          webhookSecretSet: !!c.webhookSecret,
+          webhookVerifyTokenSet: !!c.webhookVerifyToken,
+          templates: [
+            { use: 'English', name: c.templateName, language: c.templateLanguage },
+            { use: 'Telugu', name: c.templateNameTe || c.templateName, language: c.templateLanguageTe || 'te' },
+            { use: 'English + Telugu', name: c.templateNameBoth || c.templateName, language: c.templateLanguageBoth || c.templateLanguage },
+          ],
+        },
+        webhook: {
+          callbackUrl: `${req.protocol}://${req.get('host')}/webhooks/whatsapp`,
+          lastEventAt: lastEvent && lastEvent.m ? new Date(lastEvent.m).toISOString() : null,
+          lastRejectedAt: lastRejected && lastRejected.m ? new Date(lastRejected.m).toISOString() : null,
+        },
+      });
+    })
+  );
+
+  r.post(
+    '/whatsapp/check',
+    requirePermission(P.MANAGE_SETTINGS),
+    wrap(async (req, res) => {
+      const st = whatsappStatus();
+      const result =
+        st.mode === 'not_configured' || typeof whatsapp.checkConnection !== 'function'
+          ? { checks: [{ key: 'connection', ok: false, required: true, label: 'WhatsApp connection', detail: st.message }] }
+          : await whatsapp.checkConnection();
+      const ok = result.checks.filter((x) => x.required).every((x) => x.ok);
+      await audit.log({ actor: req.user, action: 'whatsapp.checked', description: `${req.user.username} checked the WhatsApp connection: ${ok ? 'OK' : 'problems found'}`, details: result, ctx: requestContext(req) });
+      res.json({ mode: st.mode, ok, ...result });
+    })
+  );
+
+  r.post(
+    '/whatsapp/test-message',
+    requirePermission(P.MANAGE_SETTINGS),
+    json,
+    wrap(async (req, res) => {
+      const st = whatsappStatus();
+      if (!st.canSend) throw new HttpError(409, st.message);
+      const b = req.body || {};
+      const p = normalizePhone(b.phoneNumber, { internationalEnabled: config.upload.internationalNumbersEnabled });
+      if (!p.ok) throw new HttpError(400, p.reason);
+      const language = ['en', 'te', 'both'].includes(b.language) ? b.language : 'en';
+      const variables = { customer_name: 'Test Customer', amount_due: '1', due_date: '01-01-2030', account_id: 'TEST-0001', installment_number: '1', collector_name: '', custom_message: '', phone_number: p.value };
+      const templates = await service.getGlobalTemplate();
+      const text = renderLocalized({ en: templates.body, te: templates.bodyTe }, language, { customer_name: 'Test Customer', amount_due: 1, due_date: '2030-01-01', account_id: 'TEST-0001', phone_number: p.value });
+      let result;
+      try {
+        const sent = await whatsapp.sendMessage({ to: p.value, text, variables, language, idempotencyKey: `TEST:${Date.now()}:${p.value}` });
+        result = { ok: true, simulated: st.mode === 'test', providerMessageId: sent.providerMessageId };
+      } catch (err) {
+        result = { ok: false, simulated: st.mode === 'test', errorKind: err.kind || 'ERROR', errorCode: err.code || null, error: err.message };
+      }
+      await audit.log({
+        actor: req.user,
+        action: 'whatsapp.test_message',
+        description: `${req.user.username} sent a ${st.mode === 'test' ? 'SIMULATED ' : ''}test WhatsApp message to ${p.value}: ${result.ok ? 'accepted' : `failed (${result.error})`}`,
+        details: { language, ...result },
+        ctx: requestContext(req),
+      });
+      res.json({ to: p.value, language, mode: st.mode, ...result });
     })
   );
 
